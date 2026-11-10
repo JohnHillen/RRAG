@@ -1,0 +1,246 @@
+services:
+  # ============================================================================
+  # 1. SurrealDB 4.0 (Multi-Model: Vector HNSW + Full-Text BM25 + Knowledge Graph)
+  # Storage Engine: SurrealKV (100% Rust, Apache 2.0) | Core License: BSL 1.1
+  # ============================================================================
+  surrealdb:
+    image: surrealdb/surrealdb:v4.0.0
+    container_name: rag-surrealdb
+    user: "root"
+    restart: unless-stopped
+    environment:
+      - SURREAL_HTTP_MAX_SQL_BODY_SIZE=64 MiB
+      - SURREAL_HTTP_MAX_RPC_BODY_SIZE=64 MiB
+    command:
+      - start
+      - --log=info
+      - --user=${SURREAL_USER:-root}
+      - --pass=${SURREAL_PASS:-root_secret_password_change_me}
+      - --bind=0.0.0.0:8000
+      - surrealkv:///mydata/surreal.db
+    ports:
+      - "${SURREAL_PORT:-8000}:8000"
+    volumes:
+      - surreal_data:/mydata
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://localhost:8000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - rag-net
+
+  # ============================================================================
+  # 2A. Hugging Face TEI - Embedding Server (CPU Profile)
+  # Language: Rust | License: Apache 2.0 | Model: MIT (BAAI/bge-m3)
+  # ============================================================================
+  tei-embed-cpu:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    container_name: rag-tei-embed
+    profiles: ["cpu"]
+    restart: unless-stopped
+    command:
+      - --model-id
+      - ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "32"
+      - --auto-truncate
+    ports:
+      - "${TEI_EMBED_PORT:-8081}:80"
+    volumes:
+      - hf_cache:/data
+    networks:
+      rag-net:
+        aliases:
+          - tei-embed
+
+  # ============================================================================
+  # 2B. Hugging Face TEI - Embedding Server (GPU Profile)
+  # Language: Rust | License: Apache 2.0 | Model: MIT (BAAI/bge-m3)
+  # ============================================================================
+  tei-embed-gpu:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.6
+    container_name: rag-tei-embed
+    profiles: ["gpu"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - --model-id
+      - ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "64"
+      - --auto-truncate
+    ports:
+      - "${TEI_EMBED_PORT:-8081}:80"
+    volumes:
+      - hf_cache:/data
+    networks:
+      rag-net:
+        aliases:
+          - tei-embed
+
+  # ============================================================================
+  # 3A. Hugging Face TEI - High-Precision Reranker Server (CPU Profile)
+  # Language: Rust | License: Apache 2.0 | Model: Apache 2.0 (bge-reranker-v2-m3)
+  # ============================================================================
+  tei-rerank-cpu:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    container_name: rag-tei-rerank
+    profiles: ["cpu"]
+    restart: unless-stopped
+    command:
+      - --model-id
+      - ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "32"
+      - --auto-truncate
+    ports:
+      - "${TEI_RERANK_PORT:-8082}:80"
+    volumes:
+      - hf_cache:/data
+    networks:
+      rag-net:
+        aliases:
+          - tei-rerank
+
+  # ============================================================================
+  # 3B. Hugging Face TEI - High-Precision Reranker Server (GPU Profile)
+  # Language: Rust | License: Apache 2.0 | Model: Apache 2.0 (bge-reranker-v2-m3)
+  # ============================================================================
+  tei-rerank-gpu:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.6
+    container_name: rag-tei-rerank
+    profiles: ["gpu"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - --model-id
+      - ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "64"
+      - --auto-truncate
+    ports:
+      - "${TEI_RERANK_PORT:-8082}:80"
+    volumes:
+      - hf_cache:/data
+    networks:
+      rag-net:
+        aliases:
+          - tei-rerank
+
+  # ============================================================================
+  # 3C. Hugging Face TEI - Fast Reranker Server (CPU Profile)
+  # Language: Rust | License: Apache 2.0 | Model: Apache 2.0 (mmarco-mMiniLMv2-L12)
+  # ============================================================================
+  tei-rerank-fast-cpu:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    container_name: rag-tei-rerank-fast
+    profiles: ["cpu"]
+    restart: unless-stopped
+    command:
+      - --model-id
+      - ${RERANKER_FAST_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "32"
+      - --auto-truncate
+    ports:
+      - "${TEI_RERANK_FAST_PORT:-8083}:80"
+    volumes:
+      - hf_cache:/data
+    networks:
+      rag-net:
+        aliases:
+          - tei-rerank-fast
+
+  # ============================================================================
+  # 3D. Hugging Face TEI - Fast Reranker Server (GPU Profile)
+  # Language: Rust | License: Apache 2.0 | Model: Apache 2.0 (mmarco-mMiniLMv2-L12)
+  # ============================================================================
+  tei-rerank-fast-gpu:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.6
+    container_name: rag-tei-rerank-fast
+    profiles: ["gpu"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - --model-id
+      - ${RERANKER_FAST_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "64"
+      - --auto-truncate
+    ports:
+      - "${TEI_RERANK_FAST_PORT:-8083}:80"
+    volumes:
+      - hf_cache:/data
+    networks:
+      rag-net:
+        aliases:
+          - tei-rerank-fast
+
+  # ============================================================================
+  # 4. Rust RAG Orchestrator + Leptos WASM Chat UI (Axum + Trunk)
+  # Language: 100% Rust | License: MIT / Apache 2.0
+  # ============================================================================
+  rag-orchestrator:
+    build:
+      context: .
+      dockerfile: rust-rag-orchestrator/Dockerfile
+    container_name: rag-orchestrator
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - SURREAL_URL=${SURREAL_URL:-http://surrealdb:8000}
+      - TEI_EMBED_URL=${TEI_EMBED_URL:-http://tei-embed:80}
+      - TEI_RERANK_URL=${TEI_RERANK_URL:-http://tei-rerank:80}
+      - TEI_RERANK_FAST_URL=${TEI_RERANK_FAST_URL:-http://tei-rerank-fast:80}
+      - RERANKER_MODEL=${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      - RERANKER_FAST_MODEL=${RERANKER_FAST_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
+    ports:
+      - "${ORCHESTRATOR_PORT:-8080}:${ORCHESTRATOR_PORT:-8080}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    networks:
+      - rag-net
+
+networks:
+  rag-net:
+    driver: bridge
+
+volumes:
+  surreal_data:
+  hf_cache:

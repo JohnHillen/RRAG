@@ -1,0 +1,17 @@
+# Rust build artifacts (prevents copying multi-GB host target directories into the Docker build context)
+**/target
+**/dist
+
+# Local database volumes, logs & PIDs
+data/
+logs/
+.pids/
+*.surql
+*.log
+
+# Git & macOS metadata
+.git/
+.DS_Store
+
+# Large documents / PDFs in the repository root
+*.pdf

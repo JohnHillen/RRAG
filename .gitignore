@@ -1,0 +1,26 @@
+# Rust build artifacts
+**/target/
+**/dist/
+
+# Environment variables & secrets (keep .env.example in Git)
+.env
+.env.local
+
+# Local database volumes, logs & PIDs
+data/
+logs/
+.pids/
+*.log
+
+# Documents / PDFs
+*.pdf
+
+
+# Database exports / dumps (keep sql/init.surql)
+*.surql
+!sql/init.surql
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
