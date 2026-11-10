@@ -1426,11 +1426,15 @@ fn App() -> impl IntoView {
                                         <div style="display:flex; flex-direction:column; gap:0.6rem; background:#0f172a; padding:0.85rem; border-radius:8px; border:1px solid #334155;">
                                             <div>
                                                 <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
-                                                    "Projekt / Akte / Kategorie (optional, trennt gleichnamige Dateien verschiedener Projekte)"
+                                                    {move || if is_en() {
+                                                        "Project / Folder / Category (optional, groups documents & namespaces identical filenames)"
+                                                    } else {
+                                                        "Projekt / Akte / Kategorie (optional, trennt gleichnamige Dateien verschiedener Projekte)"
+                                                    }}
                                                 </label>
                                                 <input
                                                     type="text"
-                                                    placeholder="z.B. Akte 53-20, Objekt Dichtervillen oder Dienstanweisungen"
+                                                    placeholder=move || if is_en() { "e.g. Case 53-20, Project North, or Directives" } else { "z.B. Akte 53-20, Objekt Dichtervillen oder Dienstanweisungen" }
                                                     prop:value=move || doc_category.get()
                                                     on:input=move |ev| set_doc_category.set(event_target_value(&ev))
                                                 />
@@ -1446,7 +1450,11 @@ fn App() -> impl IntoView {
                                                     }
                                                 />
                                                 <label for="rev-toggle-files" style="margin:0; font-size:0.82rem; color:#e2e8f0; cursor:pointer;">
-                                                    "🔄 Ältere Revisionen bei gleichem Dokumenttitel automatisch ersetzen"
+                                                    {move || if is_en() {
+                                                        "🔄 Automatically replace older revisions sharing the same document title"
+                                                    } else {
+                                                        "🔄 Ältere Revisionen bei gleichem Dokumenttitel automatisch ersetzen"
+                                                    }}
                                                 </label>
                                             </div>
                                             <div class="toggle-row" style="margin-top:0.1rem;">
@@ -1460,7 +1468,11 @@ fn App() -> impl IntoView {
                                                     }
                                                 />
                                                 <label for="graph-toggle-files" style="margin:0; font-size:0.82rem; color:#c084fc; cursor:pointer;">
-                                                    "🕸️ Wissensgraph-Beziehungen (Personen, Firmen, Projekte) beim Upload automatisch extrahieren (GraphRAG)"
+                                                    {move || if is_en() {
+                                                        "🕸️ Automatically extract Knowledge Graph relations (entities & edges via LLM) during upload"
+                                                    } else {
+                                                        "🕸️ Wissensgraph-Beziehungen (Personen, Firmen, Projekte) beim Upload automatisch extrahieren (GraphRAG)"
+                                                    }}
                                                 </label>
                                             </div>
                                         </div>
@@ -1478,10 +1490,18 @@ fn App() -> impl IntoView {
                                         <label for="multi-file-upload" class="dropzone-label">
                                             <div class="dropzone-icon">"📂"</div>
                                             <div style="font-weight:600; color:#f8fafc; font-size:0.95rem;">
-                                                "Klicken, um eine oder mehrere Dateien auszuwählen"
+                                                {move || if is_en() {
+                                                    "Click to select one or multiple files"
+                                                } else {
+                                                    "Klicken, um eine oder mehrere Dateien auszuwählen"
+                                                }}
                                             </div>
                                             <div style="font-size:0.78rem; color:#94a3b8;">
-                                                "Unterstützt Multi-Upload: PDF (inkl. automatischem OCR für Scans), Markdown, HTML, TXT"
+                                                {move || if is_en() {
+                                                    "Supports batch upload: PDF (incl. automatic OCR for scans), Markdown, HTML, TXT"
+                                                } else {
+                                                    "Unterstützt Multi-Upload: PDF (inkl. automatischem OCR für Scans), Markdown, HTML, TXT"
+                                                }}
                                             </div>
                                         </label>
 
@@ -1503,11 +1523,17 @@ fn App() -> impl IntoView {
                                             on:click=on_upload_files
                                         >
                                             {move || if is_uploading.get() {
-                                                "Verarbeite Dateien...".to_string()
+                                                if is_en() { "Processing files...".to_string() } else { "Verarbeite Dateien...".to_string() }
                                             } else {
                                                 let n = selected_file_names.get().len();
                                                 if n > 0 {
-                                                    format!("🚀 {} ausgewählte Datei(en) hochladen & indexieren", n)
+                                                    if is_en() {
+                                                        format!("🚀 Upload & index {} selected file(s)", n)
+                                                    } else {
+                                                        format!("🚀 {} ausgewählte Datei(en) hochladen & indexieren", n)
+                                                    }
+                                                } else if is_en() {
+                                                    "Upload & index files".to_string()
                                                 } else {
                                                     "Dateien hochladen & indexieren".to_string()
                                                 }
@@ -1520,22 +1546,22 @@ fn App() -> impl IntoView {
                                     <div style="display:flex; flex-direction:column; gap:0.9rem;">
                                         <div>
                                             <label style="font-size:0.8rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
-                                                "Projekt / Akte / Kategorie (optional)"
+                                                {move || if is_en() { "Project / Folder / Category (optional)" } else { "Projekt / Akte / Kategorie (optional)" }}
                                             </label>
                                             <input
                                                 type="text"
-                                                placeholder="z.B. Dienstanweisungen oder Akte 53-20"
+                                                placeholder=move || if is_en() { "e.g. Documentation or Directives" } else { "z.B. Dienstanweisungen oder Akte 53-20" }
                                                 prop:value=move || doc_category.get()
                                                 on:input=move |ev| set_doc_category.set(event_target_value(&ev))
                                             />
                                         </div>
                                         <div>
                                             <label style="font-size:0.8rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
-                                                "Dokumenten-Titel"
+                                                {move || if is_en() { "Document Title" } else { "Dokumenten-Titel" }}
                                             </label>
                                             <input
                                                 type="text"
-                                                placeholder="z.B. Dienstanweisung A oder Architektur-Richtlinie"
+                                                placeholder=move || if is_en() { "e.g. Architecture Guideline" } else { "z.B. Dienstanweisung A oder Architektur-Richtlinie" }
                                                 prop:value=move || doc_title.get()
                                                 on:input=move |ev| set_doc_title.set(event_target_value(&ev))
                                             />
@@ -1551,7 +1577,11 @@ fn App() -> impl IntoView {
                                                 }
                                             />
                                             <label for="rev-toggle-text" style="margin:0; font-size:0.82rem; color:#e2e8f0; cursor:pointer;">
-                                                "🔄 Ältere Revisionen bei gleichem Dokumenttitel automatisch ersetzen"
+                                                {move || if is_en() {
+                                                    "🔄 Automatically replace older revisions sharing the same document title"
+                                                } else {
+                                                    "🔄 Ältere Revisionen bei gleichem Dokumenttitel automatisch ersetzen"
+                                                }}
                                             </label>
                                         </div>
                                         <div class="toggle-row">
@@ -1565,15 +1595,19 @@ fn App() -> impl IntoView {
                                                 }
                                             />
                                             <label for="graph-toggle-text" style="margin:0; font-size:0.82rem; color:#c084fc; cursor:pointer;">
-                                                "🕸️ Wissensgraph-Beziehungen (Personen, Firmen, Projekte) beim Speichern automatisch extrahieren (GraphRAG)"
+                                                {move || if is_en() {
+                                                    "🕸️ Automatically extract Knowledge Graph relations (GraphRAG)"
+                                                } else {
+                                                    "🕸️ Wissensgraph-Beziehungen (Personen, Firmen, Projekte) beim Speichern automatisch extrahieren (GraphRAG)"
+                                                }}
                                             </label>
                                         </div>
                                         <div>
                                             <label style="font-size:0.8rem; color:#94a3b8; display:block; margin-bottom:0.3rem;">
-                                                "Inhalt (Markdown oder Text)"
+                                                {move || if is_en() { "Content (Markdown or Plaintext)" } else { "Inhalt (Markdown oder Text)" }}
                                             </label>
                                             <textarea
-                                                placeholder="Text hier einfügen..."
+                                                placeholder=move || if is_en() { "Paste text or markdown content here..." } else { "Text hier einfügen..." }
                                                 prop:value=move || doc_text.get()
                                                 on:input=move |ev| set_doc_text.set(event_target_value(&ev))
                                             ></textarea>
@@ -1583,7 +1617,7 @@ fn App() -> impl IntoView {
                                             disabled=move || is_uploading.get()
                                             on:click=on_ingest_text
                                         >
-                                            "🚀 In SurrealDB indexieren"
+                                            {move || if is_en() { "🚀 Index into SurrealDB" } else { "🚀 In SurrealDB indexieren" }}
                                         </button>
                                     </div>
                                 }.into_view()
@@ -1595,7 +1629,11 @@ fn App() -> impl IntoView {
                                                 {move || {
                                                     let docs = stored_docs.get();
                                                     let total_c: usize = docs.iter().map(|d| d.chunk_count).sum();
-                                                    format!("📊 {} Dokument(e) mit insgesamt {} Vektor-Chunks in SurrealDB", docs.len(), total_c)
+                                                    if is_en() {
+                                                        format!("📊 {} document(s) with {} total vector chunks in SurrealDB", docs.len(), total_c)
+                                                    } else {
+                                                        format!("📊 {} Dokument(e) mit insgesamt {} Vektor-Chunks in SurrealDB", docs.len(), total_c)
+                                                    }
                                                 }}
                                             </span>
                                             <div style="display:flex; gap:0.5rem;">
@@ -1607,21 +1645,26 @@ fn App() -> impl IntoView {
                                                             if let Ok(resp) = Request::post("/v1/documents/deduplicate").send().await {
                                                                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                                                                     let rem = json["removed_documents"].as_u64().unwrap_or(0);
-                                                                    set_ingest_status.set(format!("🧹 {} ältere Duplikat-Einträge bereinigt!", rem));
+                                                                    let msg = if is_en() {
+                                                                        format!("🧹 Pruned {} older duplicate revision(s)!", rem)
+                                                                    } else {
+                                                                        format!("🧹 {} ältere Duplikat-Einträge bereinigt!", rem)
+                                                                    };
+                                                                    set_ingest_status.set(msg);
                                                                     refresh_documents();
                                                                 }
                                                             }
                                                         });
                                                     }
                                                 >
-                                                    "🧹 Alte Duplikate bereinigen"
+                                                    {move || if is_en() { "🧹 Prune Old Revisions" } else { "🧹 Alte Duplikate bereinigen" }}
                                                 </button>
                                                 <button
                                                     class="btn btn-secondary"
                                                     style="padding:0.35rem 0.7rem; font-size:0.78rem;"
                                                     on:click=move |_| refresh_documents()
                                                 >
-                                                    "🔄 Aktualisieren"
+                                                    {move || if is_en() { "🔄 Refresh" } else { "🔄 Aktualisieren" }}
                                                 </button>
                                             </div>
                                         </div>
@@ -1631,7 +1674,7 @@ fn App() -> impl IntoView {
                                             if docs.is_empty() {
                                                 view! {
                                                     <div style="padding:2rem; text-align:center; color:#64748b; border:1px dashed #334155; border-radius:8px;">
-                                                        "Noch keine Dokumente in SurrealDB gespeichert."
+                                                        {move || if is_en() { "No documents stored in SurrealDB yet." } else { "Noch keine Dokumente in SurrealDB gespeichert." }}
                                                     </div>
                                                 }.into_view()
                                             } else {
@@ -1645,7 +1688,7 @@ fn App() -> impl IntoView {
                                                                     <div style="display:flex; flex-direction:column; gap:2px;">
                                                                         <strong style="color:#f8fafc; font-size:0.86rem;">"📄 " {doc.doc_title}</strong>
                                                                         <span style="color:#94a3b8; font-size:0.74rem;">
-                                                                            {format!("{} Chunks · Stand: {} · ID: {}", doc.chunk_count, doc.created_at, doc.doc_id)}
+                                                                            {format!("{} Chunks · {} · ID: {}", doc.chunk_count, doc.created_at, doc.doc_id)}
                                                                         </span>
                                                                     </div>
                                                                     <button
@@ -1658,14 +1701,19 @@ fn App() -> impl IntoView {
                                                                                 let url = format!("/v1/documents/{}", del_id);
                                                                                 if let Ok(resp) = Request::delete(&url).send().await {
                                                                                     if resp.ok() {
-                                                                                        set_ingest_status.set(format!("🗑️ '{}' wurde samt allen Vektor-Chunks gelöscht.", del_title));
+                                                                                        let msg = if is_en() {
+                                                                                            format!("🗑️ '{}' and all associated vector chunks deleted.", del_title)
+                                                                                        } else {
+                                                                                            format!("🗑️ '{}' wurde samt allen Vektor-Chunks gelöscht.", del_title)
+                                                                                        };
+                                                                                        set_ingest_status.set(msg);
                                                                                         refresh_documents();
                                                                                     }
                                                                                 }
                                                                             });
                                                                         }
                                                                     >
-                                                                        "🗑️ Löschen"
+                                                                        {move || if is_en() { "🗑️ Delete" } else { "🗑️ Löschen" }}
                                                                     </button>
                                                                 </div>
                                                             }
@@ -1844,7 +1892,11 @@ fn App() -> impl IntoView {
                                             set_llm_provider_sig.set("openai_compatible".to_string());
                                             set_llm_base_url_sig.set("http://host.docker.internal:11434/v1".to_string());
                                             set_llm_model_sig.set("qwen2.5:7b".to_string());
-                                            set_llm_config_status.set("Vorlage 'Lokales Ollama (Mac)' geladen. Klicke auf '🔄 Modelle abrufen' oder '💾 Speichern'.".to_string());
+                                            set_llm_config_status.set(if is_en() {
+                                                "Preset 'Local Ollama (Mac)' loaded. Click '🔄 Fetch models' or '💾 Save'.".to_string()
+                                            } else {
+                                                "Vorlage 'Lokales Ollama (Mac)' geladen. Klicke auf '🔄 Modelle abrufen' oder '💾 Speichern'.".to_string()
+                                            });
                                         }
                                     >
                                         {move || if is_en() { "🍏 Local: Ollama (Mac)" } else { "🍏 Lokal: Ollama (Mac)" }}
@@ -1855,7 +1907,11 @@ fn App() -> impl IntoView {
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("openai_compatible".to_string());
                                             set_llm_base_url_sig.set("https://DEINE-POD-ID-8000.proxy.runpod.net/v1".to_string());
-                                            set_llm_config_status.set("Vorlage 'RunPod / Remote vLLM / Ollama' geladen. Trage deine RunPod-URL oder Server-IP (z.B. http://192.168.1.50:11434/v1) ein.".to_string());
+                                            set_llm_config_status.set(if is_en() {
+                                                "Preset 'RunPod / Remote vLLM / Ollama' loaded. Enter your RunPod proxy URL or server IP below.".to_string()
+                                            } else {
+                                                "Vorlage 'RunPod / Remote vLLM / Ollama' geladen. Trage deine RunPod-URL oder Server-IP (z.B. http://192.168.1.50:11434/v1) ein.".to_string()
+                                            });
                                         }
                                     >
                                         "🚀 Remote GPU: RunPod / vLLM"
@@ -1872,7 +1928,11 @@ fn App() -> impl IntoView {
                                                 "gpt-4o-mini".to_string(),
                                                 "o3-mini".to_string(),
                                             ]);
-                                            set_llm_config_status.set("Vorlage 'OpenAI Cloud' geladen. Bitte unten deinen OpenAI API-Key (sk-...) eintragen.".to_string());
+                                            set_llm_config_status.set(if is_en() {
+                                                "Preset 'OpenAI Cloud' loaded. Please enter your OpenAI API key (sk-...) below.".to_string()
+                                            } else {
+                                                "Vorlage 'OpenAI Cloud' geladen. Bitte unten deinen OpenAI API-Key (sk-...) eintragen.".to_string()
+                                            });
                                         }
                                     >
                                         "🌐 Cloud: OpenAI"
@@ -1889,7 +1949,11 @@ fn App() -> impl IntoView {
                                                 "gemini-2.5-pro".to_string(),
                                                 "gemini-2.0-flash".to_string(),
                                             ]);
-                                            set_llm_config_status.set("Vorlage 'Google Gemini' geladen. Bitte unten deinen Gemini API-Key (AIza...) eintragen.".to_string());
+                                            set_llm_config_status.set(if is_en() {
+                                                "Preset 'Google Gemini' loaded. Please enter your Gemini API key (AIza...) below.".to_string()
+                                            } else {
+                                                "Vorlage 'Google Gemini' geladen. Bitte unten deinen Gemini API-Key (AIza...) eintragen.".to_string()
+                                            });
                                         }
                                     >
                                         "✨ Cloud: Google Gemini"
@@ -1906,7 +1970,11 @@ fn App() -> impl IntoView {
                                                 "claude-3-5-sonnet-latest".to_string(),
                                                 "claude-3-5-haiku-latest".to_string(),
                                             ]);
-                                            set_llm_config_status.set("Vorlage 'Anthropic Claude' geladen. Bitte unten deinen Anthropic API-Key (sk-ant-...) eintragen.".to_string());
+                                            set_llm_config_status.set(if is_en() {
+                                                "Preset 'Anthropic Claude' loaded. Please enter your Anthropic API key (sk-ant-...) below.".to_string()
+                                            } else {
+                                                "Vorlage 'Anthropic Claude' geladen. Bitte unten deinen Anthropic API-Key (sk-ant-...) eintragen.".to_string()
+                                            });
                                         }
                                     >
                                         "🧠 Cloud: Anthropic Claude"
@@ -1917,7 +1985,11 @@ fn App() -> impl IntoView {
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("none".to_string());
                                             set_llm_model_sig.set("none".to_string());
-                                            set_llm_config_status.set("Reiner Retrieval-Modus (ohne LLM) ausgewählt.".to_string());
+                                            set_llm_config_status.set(if is_en() {
+                                                "Retrieval-only mode (no LLM) selected.".to_string()
+                                            } else {
+                                                "Reiner Retrieval-Modus (ohne LLM) ausgewählt.".to_string()
+                                            });
                                         }
                                     >
                                         {move || if is_en() { "🔍 Retrieval Only (No LLM)" } else { "🔍 Nur Retrieval (Kein LLM)" }}
@@ -2134,7 +2206,12 @@ fn App() -> impl IntoView {
                                         let url = llm_base_url_sig.get();
                                         let key = llm_api_key_sig.get();
                                         let model = llm_model_sig.get();
-                                        set_llm_config_status.set("💾 Speichere & aktiviere LLM-Konfiguration...".to_string());
+                                        let save_msg = if is_en() {
+                                            "💾 Saving & activating LLM configuration...".to_string()
+                                        } else {
+                                            "💾 Speichere & aktiviere LLM-Konfiguration...".to_string()
+                                        };
+                                        set_llm_config_status.set(save_msg);
                                         spawn_local(async move {
                                             let payload = serde_json::json!({
                                                 "llm_provider": prov,
@@ -2166,11 +2243,21 @@ fn App() -> impl IntoView {
                                                         set_llm_api_key_sig.set(String::new());
                                                         set_available_models.set(mods);
                                                         set_backend_info.set(format!("LLM: {} ({})", saved_mod, saved_prov));
-                                                        set_llm_config_status.set(format!("✅ Aktiviert: {} ({})!", saved_mod, saved_prov));
+                                                        let activated_msg = if is_en() {
+                                                            format!("✅ Activated: {} ({})!", saved_mod, saved_prov)
+                                                        } else {
+                                                            format!("✅ Aktiviert: {} ({})!", saved_mod, saved_prov)
+                                                        };
+                                                        set_llm_config_status.set(activated_msg);
                                                     }
                                                 }
                                                 _ => {
-                                                    set_llm_config_status.set("❌ Fehler beim Speichern der LLM-Konfiguration.".to_string());
+                                                    let err_msg = if is_en() {
+                                                        "❌ Error saving LLM configuration.".to_string()
+                                                    } else {
+                                                        "❌ Fehler beim Speichern der LLM-Konfiguration.".to_string()
+                                                    };
+                                                    set_llm_config_status.set(err_msg);
                                                 }
                                             }
                                         });
@@ -2187,7 +2274,11 @@ fn App() -> impl IntoView {
                             // --- Aktive Ports & Schnittstellen-Übersicht ---
                             <details style="margin-top:0.2rem; border-top:1px solid #334155; padding-top:0.75rem; font-size:0.76rem; color:#94a3b8;">
                                 <summary style="cursor:pointer; color:#cbd5e1; font-weight:600;">
-                                    "🔌 Aktive Schnittstellen & Port-Konfiguration anzeigen"
+                                    {move || if is_en() {
+                                        "🔌 View active endpoints & port configuration"
+                                    } else {
+                                        "🔌 Aktive Schnittstellen & Port-Konfiguration anzeigen"
+                                    }}
                                 </summary>
                                 <div style="margin-top:0.55rem; background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.7rem; font-family:monospace; line-height:1.6; color:#e2e8f0;">
                                     {
@@ -2197,15 +2288,19 @@ fn App() -> impl IntoView {
                                         view! {
                                             <div>"• 🦀 Leptos WASM Chat-UI  : " {origin.clone()} "/"</div>
                                             <div>"• Health-Check            : " {origin.clone()} "/health"</div>
-                                            <div>"• Dokument-Ingestion (JSON): POST " {origin.clone()} "/v1/ingest"</div>
-                                            <div>"• Datei-Upload (PDF/MD/TXT): POST " {origin.clone()} "/v1/ingest/file"</div>
-                                            <div>"• Hybrid + Graph Retrieval : POST " {origin.clone()} "/v1/retrieve"</div>
-                                            <div>"• OpenAI-kompatibler Chat  : POST " {origin.clone()} "/v1/chat/completions"</div>
-                                            <div>"• MCP Server (Tool-Call)   : POST " {origin} "/mcp"</div>
+                                            <div>"• Ingestion (JSON)        : POST " {origin.clone()} "/v1/ingest"</div>
+                                            <div>"• File Upload (PDF/MD/TXT): POST " {origin.clone()} "/v1/ingest/file"</div>
+                                            <div>"• Hybrid + Graph Retrieval: POST " {origin.clone()} "/v1/retrieve"</div>
+                                            <div>"• OpenAI Chat Completion  : POST " {origin.clone()} "/v1/chat/completions"</div>
+                                            <div>"• MCP Server (Tool-Call)  : POST " {origin} "/mcp"</div>
                                         }
                                     }
                                     <div style="margin-top:0.5rem; padding-top:0.45rem; border-top:1px dashed #334155; color:#38bdf8; font-family:sans-serif;">
-                                        "💡 Falls Port 8080 belegt ist, weicht ./setup.sh beim Start automatisch auf den nächsten freien Port aus – oder du gibst deinen Wunsch-Port direkt an: "
+                                        {move || if is_en() {
+                                            "💡 If port 8080 is busy, ./setup.sh automatically fails over to the next free port – or specify directly: "
+                                        } else {
+                                            "💡 Falls Port 8080 belegt ist, weicht ./setup.sh beim Start automatisch auf den nächsten freien Port aus – oder du gibst deinen Wunsch-Port direkt an: "
+                                        }}
                                         <code style="background:#1e293b; padding:0.1rem 0.35rem; border-radius:4px; color:#f8fafc;">
                                             "./setup.sh --port 8090"
                                         </code>
