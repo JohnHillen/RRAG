@@ -20,6 +20,16 @@ pub struct GraphEntity {
     pub description: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GraphRelation {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub relation: String,
+    #[serde(default)]
+    pub to: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RetrievedChunk {
     pub id: String,
@@ -35,6 +45,8 @@ pub struct RetrievedChunk {
     pub entities: Vec<GraphEntity>,
     #[serde(default)]
     pub related_entities: Vec<GraphEntity>,
+    #[serde(default)]
+    pub relations: Vec<GraphRelation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,6 +61,8 @@ pub struct DocumentItem {
     pub doc_title: String,
     pub chunk_count: usize,
     pub created_at: String,
+    #[serde(default)]
+    pub relations: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +101,11 @@ pub struct ChatSession {
 
 const STORAGE_KEY_SESSIONS: &str = "rust_rag_chat_sessions_v1";
 const STORAGE_KEY_LANG: &str = "rust_rag_ui_lang_v1";
+const STORAGE_KEY_RERANKER: &str = "rust_rag_reranker_v1";
+const STORAGE_KEY_TOP_N: &str = "rust_rag_top_n_v1";
+const STORAGE_KEY_USE_RAG: &str = "rust_rag_use_rag_v1";
+const STORAGE_KEY_NUM_CTX: &str = "rust_rag_num_ctx_v1";
+const STORAGE_KEY_THINK: &str = "rust_rag_think_mode_v1";
 const WELCOME_TEXT_DE: &str = "Willkommen im Rust RAG & GraphRAG Studio! Unten links in der Seitenleiste findest du die Icons für Datei-Upload (➕), Dokumenten-Verwaltung (🗂️) und die Einstellungen (⚙️) für RAG, Reranker und Sprachmodelle.";
 const WELCOME_TEXT_EN: &str = "Welcome to Rust RAG & GraphRAG Studio! At the bottom left of the sidebar you'll find quick icons for File Upload (➕), Document Management (🗂️), and Settings (⚙️) for RAG, Rerankers, and LLMs.";
 
@@ -107,6 +126,115 @@ fn save_lang_to_storage(lang: &str) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let _ = storage.set_item(STORAGE_KEY_LANG, lang);
+        }
+    }
+}
+
+fn load_reranker_from_storage() -> String {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(r)) = storage.get_item(STORAGE_KEY_RERANKER) {
+                if r == "fast" || r == "high" || r == "none" {
+                    return r;
+                }
+            }
+        }
+    }
+    "fast".to_string()
+}
+
+fn save_reranker_to_storage(r: &str) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_RERANKER, r);
+        }
+    }
+}
+
+fn load_top_n_from_storage() -> usize {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(raw)) = storage.get_item(STORAGE_KEY_TOP_N) {
+                if let Ok(val) = raw.parse::<usize>() {
+                    if (1..=30).contains(&val) {
+                        return val;
+                    }
+                }
+            }
+        }
+    }
+    4usize
+}
+
+fn save_top_n_to_storage(top_n: usize) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_TOP_N, &top_n.to_string());
+        }
+    }
+}
+
+fn load_use_rag_from_storage() -> bool {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(raw)) = storage.get_item(STORAGE_KEY_USE_RAG) {
+                if raw == "false" {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn save_use_rag_to_storage(val: bool) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_USE_RAG, if val { "true" } else { "false" });
+        }
+    }
+}
+
+fn load_num_ctx_from_storage() -> u64 {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(raw)) = storage.get_item(STORAGE_KEY_NUM_CTX) {
+                if let Ok(val) = raw.parse::<u64>() {
+                    if (2048..=131072).contains(&val) {
+                        return val;
+                    }
+                }
+            }
+        }
+    }
+    16384u64
+}
+
+fn save_num_ctx_to_storage(ctx: u64) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_NUM_CTX, &ctx.to_string());
+        }
+    }
+}
+
+fn load_think_from_storage() -> bool {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(raw)) = storage.get_item(STORAGE_KEY_THINK) {
+                if raw == "false" {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn save_think_to_storage(val: bool) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_THINK, if val { "true" } else { "false" });
         }
     }
 }
@@ -186,6 +314,507 @@ fn ui_to_stored_messages(ui_msgs: &[UiChatMessage]) -> Vec<StoredChatMessage> {
         .collect()
 }
 
+fn trigger_download(filename: &str, content: &str) {
+    if let Some(win) = web_sys::window() {
+        if let Some(doc) = win.document() {
+            let parts = js_sys::Array::new();
+            parts.push(&wasm_bindgen::JsValue::from_str(content));
+
+            if let Ok(blob) = web_sys::Blob::new_with_str_sequence(&parts) {
+                if let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) {
+                    if let Ok(element) = doc.create_element("a") {
+                        if let Ok(a) = element.dyn_into::<web_sys::HtmlAnchorElement>() {
+                            a.set_href(&url);
+                            a.set_download(filename);
+                            let _ = a.click();
+                            let _ = web_sys::Url::revoke_object_url(&url);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn generate_chat_markdown(
+    title: &str,
+    model: &str,
+    use_rag: bool,
+    reranker_mode: &str,
+    top_n: usize,
+    num_ctx: u64,
+    think_mode: bool,
+    messages: &[UiChatMessage],
+) -> String {
+    let now = js_sys::Date::new_0();
+    let iso = now.to_iso_string().as_string().unwrap_or_default();
+
+    let mut out = String::new();
+    out.push_str(&format!("# 💬 Chat Export: {}\n\n", title));
+    out.push_str(&format!("- **Export-Zeitpunkt**: {}\n", iso));
+    out.push_str(&format!("- **LLM Modell**: `{}`\n", model));
+    out.push_str(&format!(
+        "- **RAG-Status**: `{}` | **Reranker-Modus**: `{}` | **Top-N Chunks**: `{}` | **Kontext-Fenster**: `{}` Tokens | **Denkmodus**: `{}`\n\n",
+        if use_rag { "Aktiv (Hybrid HNSW+BM25)" } else { "Inaktiv" },
+        reranker_mode,
+        top_n,
+        num_ctx,
+        if think_mode { "Aktiv (Thinking ON)" } else { "Inaktiv (Ohne Thinking)" }
+    ));
+    out.push_str("---\n\n");
+
+    for msg in messages {
+        let content = msg.content.get_untracked();
+        let is_user = msg.role == "user";
+        if is_user {
+            out.push_str("## 👤 User\n\n");
+        } else {
+            out.push_str(&format!("## 🤖 Assistant ({})\n\n", model));
+        }
+        out.push_str(&content);
+        out.push_str("\n\n");
+
+        if let Some(metrics) = msg.metrics_info.get_untracked() {
+            out.push_str(&format!("> ⚡ *Performance & Retrieval*: {}\n\n", metrics));
+        }
+
+        let srcs = msg.sources.get_untracked();
+        if !srcs.is_empty() {
+            let total_rels: usize = srcs.iter().map(|s| s.relations.len()).sum();
+            out.push_str(&format!(
+                "<details>\n<summary><b>📚 Referenzierte Quellen & Wissensgraph ({} Chunks, {} Relationen)</b></summary>\n\n",
+                srcs.len(),
+                total_rels
+            ));
+
+            for (idx, s) in srcs.iter().enumerate() {
+                out.push_str(&format!(
+                    "### Quelle #{}: `{}` (Chunk #{})\n",
+                    idx + 1,
+                    s.doc_title,
+                    s.chunk_index
+                ));
+                out.push_str(&format!("- **RRF Score**: {:.4}", s.rrf_score));
+                if let Some(score) = s.rerank_score {
+                    out.push_str(&format!(" | **Rerank Score**: {:.4}", score));
+                }
+                out.push_str("\n\n");
+
+                out.push_str("**Auszug (Chunk Content):**\n```\n");
+                out.push_str(&s.content);
+                out.push_str("\n```\n\n");
+
+                if !s.entities.is_empty() {
+                    let ent_strs: Vec<String> = s
+                        .entities
+                        .iter()
+                        .map(|e| format!("{}: {}", e.entity_type, e.name))
+                        .collect();
+                    out.push_str(&format!("- **Entitäten**: {}\n", ent_strs.join(", ")));
+                }
+
+                if !s.relations.is_empty() {
+                    out.push_str("- **Wissensgraph-Relationen**:\n");
+                    for rel in &s.relations {
+                        out.push_str(&format!(
+                            "  - `{}` --[{}]--> `{}`\n",
+                            rel.from, rel.relation, rel.to
+                        ));
+                    }
+                }
+                out.push_str("\n");
+            }
+            out.push_str("</details>\n\n");
+        }
+
+        out.push_str("---\n\n");
+    }
+
+    out
+}
+
+fn export_active_chat(
+    title: &str,
+    model: &str,
+    use_rag: bool,
+    reranker_mode: &str,
+    top_n: usize,
+    num_ctx: u64,
+    think_mode: bool,
+    messages: &[UiChatMessage],
+) {
+    let md = generate_chat_markdown(title, model, use_rag, reranker_mode, top_n, num_ctx, think_mode, messages);
+
+    let now = js_sys::Date::new_0();
+    let year = now.get_full_year();
+    let month = now.get_month() + 1;
+    let day = now.get_date();
+    let hours = now.get_hours();
+    let mins = now.get_minutes();
+
+    let safe_title: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let safe_title = safe_title.trim_matches('_');
+    let safe_title = if safe_title.is_empty() { "chat" } else { safe_title };
+
+    let filename = format!(
+        "chat_export_{}_{:04}{:02}{:02}_{:02}{:02}.md",
+        safe_title, year, month, day, hours, mins
+    );
+
+    trigger_download(&filename, &md);
+}
+
+/// Teilt eine LLM-Antwort in optionalen `<think>...</think>`-Denkblock `(think_text, is_currently_streaming)`
+/// und die eigentliche Hauptantwort auf.
+fn parse_think_and_answer(raw: &str) -> (Option<(String, bool)>, String) {
+    if let Some(start_idx) = raw.find("<think>") {
+        let prefix = &raw[..start_idx];
+        let rest = &raw[start_idx + 7..];
+        if let Some(end_idx) = rest.find("</think>") {
+            let think_txt = rest[..end_idx].trim().to_string();
+            let after = &rest[end_idx + 8..];
+            let answer = format!("{}{}", prefix, after).trim().to_string();
+            if think_txt.is_empty() {
+                (None, answer)
+            } else {
+                (Some((think_txt, false)), answer)
+            }
+        } else {
+            let think_txt = rest.trim().to_string();
+            let answer = prefix.trim().to_string();
+            (Some((think_txt, true)), answer)
+        }
+    } else if let Some(end_idx) = raw.find("</think>") {
+        let think_txt = raw[..end_idx].trim().to_string();
+        let answer = raw[end_idx + 8..].trim().to_string();
+        if think_txt.is_empty() {
+            (None, answer)
+        } else {
+            (Some((think_txt, false)), answer)
+        }
+    } else {
+        (None, raw.to_string())
+    }
+}
+
+fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn replace_delimited(input: &str, delim: &str, open_tag: &str, close_tag: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 32);
+    let mut rest = input;
+    let dlen = delim.len();
+    while let Some(start) = rest.find(delim) {
+        out.push_str(&rest[..start]);
+        let after_start = &rest[start + dlen..];
+        if let Some(end) = after_start.find(delim) {
+            let inner = &after_start[..end];
+            if !inner.trim().is_empty() {
+                out.push_str(open_tag);
+                out.push_str(inner);
+                out.push_str(close_tag);
+                rest = &after_start[end + dlen..];
+                continue;
+            }
+        }
+        out.push_str(delim);
+        rest = after_start;
+    }
+    out.push_str(rest);
+    out
+}
+
+fn highlight_citations(input: &str) -> String {
+    let mut s = input.to_string();
+    for i in 1..=20 {
+        let src_en = format!("[Source {}]", i);
+        let src_de = format!("[Quelle {}]", i);
+        let src_hash = format!("[Quelle #{}]", i);
+        let badge_en = format!("<span class=\"md-cite-badge\">[Source {}]</span>", i);
+        let badge_de = format!("<span class=\"md-cite-badge\">[Quelle {}]</span>", i);
+        if s.contains(&src_en) {
+            s = s.replace(&src_en, &badge_en);
+        }
+        if s.contains(&src_de) {
+            s = s.replace(&src_de, &badge_de);
+        }
+        if s.contains(&src_hash) {
+            s = s.replace(&src_hash, &badge_de);
+        }
+    }
+    s
+}
+
+fn format_inline_markdown(line: &str) -> String {
+    let mut out = String::with_capacity(line.len() + 32);
+    for (idx, segment) in line.split('`').enumerate() {
+        if idx % 2 == 1 {
+            out.push_str("<code class=\"md-inline-code\">");
+            out.push_str(&escape_html(segment));
+            out.push_str("</code>");
+        } else {
+            let mut s = escape_html(segment);
+            // Clean LaTeX wrappers like \[ \boxed{...} \]
+            s = s.replace("\\[", "").replace("\\]", "").replace("\\(", "").replace("\\)", "");
+            while let Some(b_start) = s.find("\\boxed{") {
+                let before = &s[..b_start];
+                let after_b = &s[b_start + 7..];
+                if let Some(b_end) = after_b.find('}') {
+                    let val = &after_b[..b_end];
+                    let tail = &after_b[b_end + 1..];
+                    s = format!("{}<strong>{}</strong>{}", before, val, tail);
+                } else {
+                    break;
+                }
+            }
+            s = replace_delimited(&s, "***", "<strong><em>", "</em></strong>");
+            s = replace_delimited(&s, "**", "<strong>", "</strong>");
+            s = replace_delimited(&s, "*", "<em>", "</em>");
+            s = highlight_citations(&s);
+            out.push_str(&s);
+        }
+    }
+    out
+}
+
+fn parse_unordered_list_item(trimmed: &str) -> Option<&str> {
+    for prefix in ["- ", "* ", "+ ", "• "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+fn parse_ordered_list_item(trimmed: &str) -> Option<(usize, &str)> {
+    let dot_pos = trimmed.find(". ").or_else(|| trimmed.find(") "))?;
+    if dot_pos == 0 || dot_pos > 4 {
+        return None;
+    }
+    let num_str = &trimmed[..dot_pos];
+    if !num_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let num = num_str.parse::<usize>().ok()?;
+    Some((num, &trimmed[dot_pos + 2..]))
+}
+
+/// Konvertiert Markdown-Text sicher in strukturiertes HTML für die Chat-Anzeige.
+fn render_markdown_to_html(md: &str) -> String {
+    let mut html = String::with_capacity(md.len() + 256);
+    let mut in_code_block = false;
+    let mut code_lines: Vec<String> = Vec::new();
+    let mut open_list: Option<&'static str> = None;
+    let mut paragraph_lines: Vec<String> = Vec::new();
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+
+    let flush_paragraph = |para: &mut Vec<String>, out: &mut String| {
+        if !para.is_empty() {
+            out.push_str("<p>");
+            out.push_str(&para.join("<br/>"));
+            out.push_str("</p>");
+            para.clear();
+        }
+    };
+
+    let flush_list = |list_state: &mut Option<&'static str>, out: &mut String| {
+        if let Some(tag) = list_state.take() {
+            out.push_str("</");
+            out.push_str(tag);
+            out.push('>');
+        }
+    };
+
+    let flush_table = |rows: &mut Vec<Vec<String>>, out: &mut String| {
+        if !rows.is_empty() {
+            out.push_str("<div class=\"md-table-wrap\"><table class=\"md-table\">");
+            for (r_idx, row) in rows.iter().enumerate() {
+                if r_idx == 0 {
+                    out.push_str("<thead><tr>");
+                    for cell in row {
+                        out.push_str("<th>");
+                        out.push_str(&format_inline_markdown(cell.trim()));
+                        out.push_str("</th>");
+                    }
+                    out.push_str("</tr></thead><tbody>");
+                } else {
+                    out.push_str("<tr>");
+                    for cell in row {
+                        out.push_str("<td>");
+                        out.push_str(&format_inline_markdown(cell.trim()));
+                        out.push_str("</td>");
+                    }
+                    out.push_str("</tr>");
+                }
+            }
+            out.push_str("</tbody></table></div>");
+            rows.clear();
+        }
+    };
+
+    for line in md.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("```") {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            flush_table(&mut table_rows, &mut html);
+
+            if in_code_block {
+                html.push_str("<pre class=\"md-code-block\"><code>");
+                html.push_str(&escape_html(&code_lines.join("\n")));
+                html.push_str("</code></pre>");
+                code_lines.clear();
+                in_code_block = false;
+            } else {
+                in_code_block = true;
+            }
+            continue;
+        }
+
+        if in_code_block {
+            code_lines.push(line.to_string());
+            continue;
+        }
+
+        // Table row detection
+        if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 2 {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            let inner = &trimmed[1..trimmed.len() - 1];
+            let is_sep = inner
+                .chars()
+                .all(|c| c == '|' || c == '-' || c == ':' || c.is_whitespace());
+            if !is_sep {
+                let cells: Vec<String> = inner.split('|').map(|s| s.trim().to_string()).collect();
+                table_rows.push(cells);
+            }
+            continue;
+        } else if !table_rows.is_empty() {
+            flush_table(&mut table_rows, &mut html);
+        }
+
+        if trimmed.is_empty() {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            continue;
+        }
+
+        if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            html.push_str("<hr class=\"md-hr\"/>");
+            continue;
+        }
+
+        if let Some(h4) = trimmed.strip_prefix("#### ") {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            html.push_str("<h4>");
+            html.push_str(&format_inline_markdown(h4));
+            html.push_str("</h4>");
+            continue;
+        }
+        if let Some(h3) = trimmed.strip_prefix("### ") {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            html.push_str("<h3>");
+            html.push_str(&format_inline_markdown(h3));
+            html.push_str("</h3>");
+            continue;
+        }
+        if let Some(h2) = trimmed.strip_prefix("## ") {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            html.push_str("<h2>");
+            html.push_str(&format_inline_markdown(h2));
+            html.push_str("</h2>");
+            continue;
+        }
+        if let Some(h1) = trimmed.strip_prefix("# ") {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            html.push_str("<h1>");
+            html.push_str(&format_inline_markdown(h1));
+            html.push_str("</h1>");
+            continue;
+        }
+
+        if let Some(quote) = trimmed.strip_prefix("> ") {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            flush_list(&mut open_list, &mut html);
+            html.push_str("<blockquote class=\"md-quote\">");
+            html.push_str(&format_inline_markdown(quote));
+            html.push_str("</blockquote>");
+            continue;
+        }
+
+        let indent = line.len().saturating_sub(line.trim_start().len());
+
+        if let Some(item_txt) = parse_unordered_list_item(trimmed) {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            if open_list != Some("ul") {
+                flush_list(&mut open_list, &mut html);
+                html.push_str("<ul>");
+                open_list = Some("ul");
+            }
+            if indent >= 2 {
+                html.push_str("<li class=\"md-li-sub\">");
+            } else {
+                html.push_str("<li>");
+            }
+            html.push_str(&format_inline_markdown(item_txt));
+            html.push_str("</li>");
+            continue;
+        }
+
+        if let Some((num, item_txt)) = parse_ordered_list_item(trimmed) {
+            flush_paragraph(&mut paragraph_lines, &mut html);
+            if open_list != Some("ol") {
+                flush_list(&mut open_list, &mut html);
+                html.push_str("<ol>");
+                open_list = Some("ol");
+            }
+            if indent >= 2 {
+                html.push_str(&format!("<li class=\"md-li-sub\" value=\"{}\">", num));
+            } else {
+                html.push_str(&format!("<li value=\"{}\">", num));
+            }
+            html.push_str(&format_inline_markdown(item_txt));
+            html.push_str("</li>");
+            continue;
+        }
+
+        flush_list(&mut open_list, &mut html);
+        paragraph_lines.push(format_inline_markdown(trimmed));
+    }
+
+    if in_code_block && !code_lines.is_empty() {
+        html.push_str("<pre class=\"md-code-block\"><code>");
+        html.push_str(&escape_html(&code_lines.join("\n")));
+        html.push_str("</code></pre>");
+    }
+    flush_table(&mut table_rows, &mut html);
+    flush_list(&mut open_list, &mut html);
+    flush_paragraph(&mut paragraph_lines, &mut html);
+
+    html
+}
+
 fn make_session_title(prompt: &str) -> String {
     let trimmed = prompt.trim();
     if trimmed.chars().count() <= 34 {
@@ -194,6 +823,42 @@ fn make_session_title(prompt: &str) -> String {
         let short: String = trimmed.chars().take(32).collect();
         format!("{}…", short.trim_end())
     }
+}
+
+fn get_file_relative_path(file: &web_sys::File) -> String {
+    js_sys::Reflect::get(file.as_ref(), &wasm_bindgen::JsValue::from_str("webkitRelativePath"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+fn extract_category_from_path(rel_path: &str) -> Option<String> {
+    let clean = rel_path.trim().replace('\\', "/");
+    let parts: Vec<&str> = clean.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() >= 3 {
+        // e.g. "showcase_documents/HR/Mitarbeiter.pdf" -> "HR"
+        let folder_parts = &parts[1..parts.len() - 1];
+        Some(folder_parts.join(" / "))
+    } else if parts.len() == 2 {
+        // e.g. "HR/Mitarbeiter.pdf" -> "HR"
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_category_and_title(raw_title: &str) -> (String, String) {
+    let trimmed = raw_title.trim();
+    if trimmed.starts_with('[') {
+        if let Some(end_idx) = trimmed.find(']') {
+            let cat = trimmed[1..end_idx].trim().to_string();
+            let title = trimmed[end_idx + 1..].trim().to_string();
+            if !cat.is_empty() {
+                return (cat, if title.is_empty() { raw_title.to_string() } else { title });
+            }
+        }
+    }
+    ("General".to_string(), trimmed.to_string())
 }
 
 fn main() {
@@ -241,9 +906,11 @@ fn App() -> impl IntoView {
     };
 
     let (user_input, set_user_input) = create_signal(String::new());
-    let (use_rag, set_use_rag) = create_signal(true);
-    let (reranker_mode, set_reranker_mode) = create_signal("fast".to_string());
-    let (top_n, set_top_n) = create_signal(4usize);
+    let (use_rag, set_use_rag) = create_signal(load_use_rag_from_storage());
+    let (reranker_mode, set_reranker_mode) = create_signal(load_reranker_from_storage());
+    let (top_n, set_top_n) = create_signal(load_top_n_from_storage());
+    let (num_ctx_sig, set_num_ctx_sig) = create_signal(load_num_ctx_from_storage());
+    let (think_mode_sig, set_think_mode_sig) = create_signal(load_think_from_storage());
     let (is_loading, set_is_loading) = create_signal(false);
 
     // --- Temporärer Chat-Anhang (📎 ohne Datenbank-Speicherung) ---
@@ -255,9 +922,14 @@ fn App() -> impl IntoView {
 
     // --- Modal & Ingestion Signals ---
     let (show_ingest_modal, set_show_ingest_modal) = create_signal(false);
+    let (is_modal_fullscreen, set_is_modal_fullscreen) = create_signal(false);
+    let (doc_search_term, set_doc_search_term) = create_signal(String::new());
+    let (selected_category_filter, set_selected_category_filter) = create_signal("all".to_string());
+    let (is_filter_expanded, set_is_filter_expanded) = create_signal(false);
     // Tab innerhalb des Dialogs: "files" (Multi-File Upload), "text" (Manueller Text) oder "docs" (Dokumenten-Verwaltung)
     let (modal_tab, set_modal_tab) = create_signal("files".to_string());
     let (selected_file_names, set_selected_file_names) = create_signal(Vec::<(String, String)>::new());
+    let (selected_files, set_selected_files) = create_signal(Vec::<web_sys::File>::new());
     let (is_uploading, set_is_uploading) = create_signal(false);
 
     let (doc_category, set_doc_category) = create_signal(String::new());
@@ -269,6 +941,7 @@ fn App() -> impl IntoView {
     let (doc_text, set_doc_text) = create_signal(String::new());
     let (ingest_status, set_ingest_status) = create_signal(String::new());
     let file_input_ref = create_node_ref::<leptos::html::Input>();
+    let folder_input_ref = create_node_ref::<leptos::html::Input>();
 
     // Lädt die Liste aller indexierten Dokumente aus SurrealDB (`GET /v1/documents`)
     let refresh_documents = move || {
@@ -337,46 +1010,55 @@ fn App() -> impl IntoView {
         load_llm_config();
     });
 
-    // --- Handler: Dateiauswahl im versteckten Multi-File-Input geändert ---
+    // --- Handler: Dateiauswahl (Dateien oder ganzer Ordner) geändert ---
     let on_files_selected = move |ev: leptos::ev::Event| {
         let Some(target) = ev.target() else { return };
         let Ok(dom_input) = target.dyn_into::<HtmlInputElement>() else { return };
         let Some(files) = dom_input.files() else { return };
 
         let mut list = Vec::new();
+        let mut file_vec = Vec::new();
         for i in 0..files.length() {
             if let Some(f) = files.get(i) {
+                let name = f.name();
+                if name.starts_with('.') {
+                    continue;
+                }
                 let blob: &web_sys::Blob = f.as_ref();
                 let size_kb = (blob.size() / 1024.0).max(1.0) as u64;
-                list.push((f.name(), format!("{} KB", size_kb)));
+                let rel_path = get_file_relative_path(&f);
+                let display_name = if let Some(cat) = extract_category_from_path(&rel_path) {
+                    format!("[{}] {}", cat, name)
+                } else {
+                    name
+                };
+                list.push((display_name, format!("{} KB", size_kb)));
+                file_vec.push(f);
             }
         }
         set_selected_file_names.set(list);
+        set_selected_files.set(file_vec);
         set_ingest_status.set(String::new());
     };
 
-    // --- Handler: Multi-File Upload absenden (Sequenziell pro Datei mit Live-Fortschritt) ---
+    // --- Handler: Multi-File / Folder Upload absenden (Sequenziell pro Datei mit Live-Fortschritt) ---
     let on_upload_files = move |_: leptos::ev::MouseEvent| {
-        let Some(input_el) = file_input_ref.get() else { return };
-        let dom_input: &HtmlInputElement = &input_el;
-        let Some(files) = dom_input.files() else { return };
-        let count = files.length();
+        let file_vec = selected_files.get();
+        let count = file_vec.len();
         if count == 0 {
-            set_ingest_status.set("Bitte zuerst mindestens eine Datei auswählen.".to_string());
+            set_ingest_status.set(if is_en() {
+                "Please select at least one file or folder first.".to_string()
+            } else {
+                "Bitte zuerst mindestens eine Datei oder einen Ordner auswählen.".to_string()
+            });
             return;
-        }
-
-        let mut file_vec = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            if let Some(file) = files.get(i) {
-                file_vec.push(file);
-            }
         }
 
         set_is_uploading.set(true);
         let category_val = doc_category.get();
         let replace_rev_val = replace_revision.get();
         let extract_graph_val = extract_graph.get();
+        let is_en_val = is_en();
 
         spawn_local(async move {
             let total_files = file_vec.len();
@@ -390,22 +1072,47 @@ fn App() -> impl IntoView {
 
             for (idx, file) in file_vec.into_iter().enumerate() {
                 let filename = file.name();
-                let step_desc = if extract_graph_val {
-                    "Extrahiere Text (inkl. OCR), Embeddings & 🕸️ Wissensgraph-Beziehungen..."
-                } else {
-                    "Prüfe Inhalts-Hash, extrahiere Text (inkl. OCR) & berechne Embeddings..."
+                let rel_path = get_file_relative_path(&file);
+                let auto_folder = extract_category_from_path(&rel_path);
+                let effective_category = match (category_val.trim(), auto_folder) {
+                    (cat, Some(folder)) if !cat.is_empty() => format!("{} / {}", cat, folder),
+                    ("", Some(folder)) => folder,
+                    (cat, None) if !cat.is_empty() => cat.to_string(),
+                    _ => String::new(),
                 };
+
+                let step_desc = if is_en_val {
+                    if extract_graph_val {
+                        "Extracting text (incl. OCR), embeddings & 🕸️ Knowledge Graph relations..."
+                    } else {
+                        "Checking content hash, extracting text (incl. OCR) & computing embeddings..."
+                    }
+                } else {
+                    if extract_graph_val {
+                        "Extrahiere Text (inkl. OCR), Embeddings & 🕸️ Wissensgraph-Beziehungen..."
+                    } else {
+                        "Prüfe Inhalts-Hash, extrahiere Text (inkl. OCR) & berechne Embeddings..."
+                    }
+                };
+                let cat_prefix = if !effective_category.is_empty() {
+                    format!("[{}] ", effective_category)
+                } else {
+                    String::new()
+                };
+                let file_prefix = if is_en_val { "File" } else { "Datei" };
                 set_ingest_status.set(format!(
-                    "⏳ Datei {}/{} ('{}'): {}",
+                    "⏳ {} {}/{} ('{}{}'): {}",
+                    file_prefix,
                     idx + 1,
                     total_files,
+                    cat_prefix,
                     filename,
                     step_desc
                 ));
 
                 let form_data = FormData::new().unwrap();
-                if !category_val.trim().is_empty() {
-                    let _ = form_data.append_with_str("category", category_val.trim());
+                if !effective_category.is_empty() {
+                    let _ = form_data.append_with_str("category", &effective_category);
                 }
                 let _ = form_data.append_with_str(
                     "replace_revision",
@@ -445,26 +1152,33 @@ fn App() -> impl IntoView {
                         error_messages.push(format!("{}: {}", filename, err));
                     }
                     Err(e) => {
-                        error_messages.push(format!("{} (Netzwerk: {})", filename, e));
+                        let net_lbl = if is_en_val { "Network" } else { "Netzwerk" };
+                        error_messages.push(format!("{} ({}: {})", filename, net_lbl, e));
                     }
                 }
             }
 
             let mut notes = Vec::new();
             if total_entities > 0 || total_relations > 0 {
-                notes.push(format!(
-                    "🕸️ {} Graph-Entitäten & {} Beziehungen verknüpft",
-                    total_entities, total_relations
-                ));
+                notes.push(if is_en_val {
+                    format!("🕸️ {} graph entities & {} relations linked", total_entities, total_relations)
+                } else {
+                    format!("🕸️ {} Graph-Entitäten & {} Beziehungen verknüpft", total_entities, total_relations)
+                });
             }
             if replaced_files > 0 {
-                notes.push(format!("🔄 {} ältere Revision(en) ersetzt", replaced_files));
+                notes.push(if is_en_val {
+                    format!("🔄 {} older revision(s) replaced", replaced_files)
+                } else {
+                    format!("🔄 {} ältere Revision(en) ersetzt", replaced_files)
+                });
             }
             if skipped_files > 0 {
-                notes.push(format!(
-                    "⏭️ {} unveränderte Datei(en) übersprungen",
-                    skipped_files
-                ));
+                notes.push(if is_en_val {
+                    format!("⏭️ {} unchanged file(s) skipped", skipped_files)
+                } else {
+                    format!("⏭️ {} unveränderte Datei(en) übersprungen", skipped_files)
+                });
             }
             let extra_note = if notes.is_empty() {
                 String::new()
@@ -473,27 +1187,55 @@ fn App() -> impl IntoView {
             };
 
             if error_messages.is_empty() {
-                set_ingest_status.set(format!(
-                    "✅ {} Datei(en) neu indexiert ({} Chunks){}",
-                    success_files, total_chunks, extra_note
-                ));
+                set_ingest_status.set(if is_en_val {
+                    format!(
+                        "✅ {} file(s) indexed ({} chunks){}",
+                        success_files, total_chunks, extra_note
+                    )
+                } else {
+                    format!(
+                        "✅ {} Datei(en) neu indexiert ({} Chunks){}",
+                        success_files, total_chunks, extra_note
+                    )
+                });
                 set_selected_file_names.set(vec![]);
+                set_selected_files.set(vec![]);
                 if let Some(el) = file_input_ref.get() {
                     el.set_value("");
                 }
+                if let Some(el) = folder_input_ref.get() {
+                    el.set_value("");
+                }
             } else if success_files > 0 || skipped_files > 0 {
-                set_ingest_status.set(format!(
-                    "⚠️ {} neu indexiert ({} Chunks){}. Fehler bei: {}",
-                    success_files,
-                    total_chunks,
-                    extra_note,
-                    error_messages.join(" | ")
-                ));
+                set_ingest_status.set(if is_en_val {
+                    format!(
+                        "⚠️ {} indexed ({} chunks){}. Errors in: {}",
+                        success_files,
+                        total_chunks,
+                        extra_note,
+                        error_messages.join(" | ")
+                    )
+                } else {
+                    format!(
+                        "⚠️ {} neu indexiert ({} Chunks){}. Fehler bei: {}",
+                        success_files,
+                        total_chunks,
+                        extra_note,
+                        error_messages.join(" | ")
+                    )
+                });
             } else {
-                set_ingest_status.set(format!(
-                    "❌ Upload fehlgeschlagen: {}",
-                    error_messages.join(" | ")
-                ));
+                set_ingest_status.set(if is_en_val {
+                    format!(
+                        "❌ Upload failed: {}",
+                        error_messages.join(" | ")
+                    )
+                } else {
+                    format!(
+                        "❌ Upload fehlgeschlagen: {}",
+                        error_messages.join(" | ")
+                    )
+                });
             }
 
             refresh_documents();
@@ -508,16 +1250,29 @@ fn App() -> impl IntoView {
         let cat = doc_category.get();
         let replace_rev = replace_revision.get();
         let extract_graph_val = extract_graph.get();
+        let is_en_val = is_en();
         if title.trim().is_empty() || text.trim().is_empty() {
-            set_ingest_status.set("Bitte Titel und Text eingeben.".to_string());
+            set_ingest_status.set(if is_en_val {
+                "Please enter a title and text.".to_string()
+            } else {
+                "Bitte Titel und Text eingeben.".to_string()
+            });
             return;
         }
 
         set_is_uploading.set(true);
-        set_ingest_status.set(if extract_graph_val {
-            "⏳ Indexiere Text & extrahiere 🕸️ Wissensgraph-Beziehungen in SurrealDB...".to_string()
+        set_ingest_status.set(if is_en_val {
+            if extract_graph_val {
+                "⏳ Indexing text & extracting 🕸️ Knowledge Graph relations into SurrealDB...".to_string()
+            } else {
+                "⏳ Indexing text in SurrealDB (HNSW + BM25)...".to_string()
+            }
         } else {
-            "⏳ Indexiere Text in SurrealDB (HNSW + BM25)...".to_string()
+            if extract_graph_val {
+                "⏳ Indexiere Text & extrahiere 🕸️ Wissensgraph-Beziehungen in SurrealDB...".to_string()
+            } else {
+                "⏳ Indexiere Text in SurrealDB (HNSW + BM25)...".to_string()
+            }
         });
         spawn_local(async move {
             let payload = serde_json::json!({
@@ -544,25 +1299,38 @@ fn App() -> impl IntoView {
                     let replaced = data["replaced_revision"].as_bool().unwrap_or(false);
                     let skipped = data["skipped_duplicate"].as_bool().unwrap_or(false);
                     let graph_note = if g_ent > 0 || g_rel > 0 {
-                        format!(" · 🕸️ {} Entitäten & {} Beziehungen", g_ent, g_rel)
+                        if is_en_val {
+                            format!(" · 🕸️ {} entities & {} relations", g_ent, g_rel)
+                        } else {
+                            format!(" · 🕸️ {} Entitäten & {} Beziehungen", g_ent, g_rel)
+                        }
                     } else {
                         String::new()
                     };
                     if skipped {
-                        set_ingest_status.set(format!(
-                            "⏭️ '{}' ist mit identischem Inhalt bereits in SurrealDB vorhanden.",
-                            title
-                        ));
+                        set_ingest_status.set(if is_en_val {
+                            format!("⏭️ '{}' already exists in SurrealDB with identical content.", title)
+                        } else {
+                            format!("⏭️ '{}' ist mit identischem Inhalt bereits in SurrealDB vorhanden.", title)
+                        });
                     } else if replaced {
-                        set_ingest_status.set(format!(
-                            "✅ Neue Revision von '{}' gespeichert ({} Chunks{}, ältere Fassung wurde automatisch ersetzt)!",
-                            title, chunks, graph_note
-                        ));
+                        set_ingest_status.set(if is_en_val {
+                            format!(
+                                "✅ New revision of '{}' saved ({} chunks{}, older version automatically replaced)!",
+                                title, chunks, graph_note
+                            )
+                        } else {
+                            format!(
+                                "✅ Neue Revision von '{}' gespeichert ({} Chunks{}, ältere Fassung wurde automatisch ersetzt)!",
+                                title, chunks, graph_note
+                            )
+                        });
                     } else {
-                        set_ingest_status.set(format!(
-                            "✅ Erfolgreich! '{}' wurde in {} Chunks indexiert{}.",
-                            title, chunks, graph_note
-                        ));
+                        set_ingest_status.set(if is_en_val {
+                            format!("✅ Success! '{}' was indexed into {} chunks{}.", title, chunks, graph_note)
+                        } else {
+                            format!("✅ Erfolgreich! '{}' wurde in {} Chunks indexiert{}.", title, chunks, graph_note)
+                        });
                     }
                     set_doc_title.set(String::new());
                     set_doc_text.set(String::new());
@@ -570,9 +1338,13 @@ fn App() -> impl IntoView {
                 }
                 Ok(resp) => {
                     let err = resp.text().await.unwrap_or_default();
-                    set_ingest_status.set(format!("❌ Fehler: {}", err));
+                    let err_lbl = if is_en_val { "Error" } else { "Fehler" };
+                    set_ingest_status.set(format!("❌ {}: {}", err_lbl, err));
                 }
-                Err(e) => set_ingest_status.set(format!("❌ Netzwerkfehler: {}", e)),
+                Err(e) => {
+                    let net_lbl = if is_en_val { "Network error" } else { "Netzwerkfehler" };
+                    set_ingest_status.set(format!("❌ {}: {}", net_lbl, e));
+                }
             }
             set_is_uploading.set(false);
         });
@@ -614,10 +1386,20 @@ fn App() -> impl IntoView {
                 }
                 Ok(resp) => {
                     let err = resp.text().await.unwrap_or_default();
-                    set_attachment_error.set(Some(format!("Fehler beim Lesen von '{}': {}", filename, err)));
+                    let msg = if is_en() {
+                        format!("Error reading '{}': {}", filename, err)
+                    } else {
+                        format!("Fehler beim Lesen von '{}': {}", filename, err)
+                    };
+                    set_attachment_error.set(Some(msg));
                 }
                 Err(e) => {
-                    set_attachment_error.set(Some(format!("Netzwerkfehler: {}", e)));
+                    let msg = if is_en() {
+                        format!("Network error: {}", e)
+                    } else {
+                        format!("Netzwerkfehler: {}", e)
+                    };
+                    set_attachment_error.set(Some(msg));
                 }
             }
             if let Some(el) = chat_attach_input_ref.get() {
@@ -645,10 +1427,10 @@ fn App() -> impl IntoView {
         next_msg_id.set(assistant_msg_id + 1);
 
         let displayed_user_prompt = if let Some(ref att) = active_attachment {
-            let mode_badge = if attach_only_mode {
-                "Nur Anhang"
+            let mode_badge = if is_en() {
+                if attach_only_mode { "Attachment only" } else { "Attachment + DB" }
             } else {
-                "Anhang + DB"
+                if attach_only_mode { "Nur Anhang" } else { "Anhang + DB" }
             };
             format!("📎 [{} · {}] {}", att.filename, mode_badge, prompt)
         } else {
@@ -686,10 +1468,18 @@ fn App() -> impl IntoView {
             last_msg.content = prompt.clone();
         }
 
-        let initial_status_msg = if active_attachment.is_some() && attach_only_mode {
-            "📎 Analysiere angehängte Datei im Arbeitsspeicher...".to_string()
+        let initial_status_msg = if is_en() {
+            if active_attachment.is_some() && attach_only_mode {
+                "📎 Analyzing attached file in RAM...".to_string()
+            } else {
+                "🔍 Searching in SurrealDB & starting reranking...".to_string()
+            }
         } else {
-            "🔍 Suche in SurrealDB & starte Reranking...".to_string()
+            if active_attachment.is_some() && attach_only_mode {
+                "📎 Analysiere angehängte Datei im Arbeitsspeicher...".to_string()
+            } else {
+                "🔍 Suche in SurrealDB & starte Reranking...".to_string()
+            }
         };
         let assistant_content = create_rw_signal(initial_status_msg);
         let assistant_sources = create_rw_signal(Vec::<RetrievedChunk>::new());
@@ -708,6 +1498,8 @@ fn App() -> impl IntoView {
         let rag_enabled = use_rag.get();
         let selected_reranker = reranker_mode.get();
         let k = top_n.get();
+        let current_ctx = num_ctx_sig.get();
+        let current_think = think_mode_sig.get();
         let active_llm_model = llm_model_sig.get();
 
         spawn_local(async move {
@@ -723,6 +1515,8 @@ fn App() -> impl IntoView {
                 "use_rag": rag_enabled,
                 "reranker": selected_reranker,
                 "top_n": k,
+                "num_ctx": current_ctx,
+                "think": current_think,
                 "attachment": attachment_json,
                 "attachment_only": attach_only_mode,
                 "messages": history_payload
@@ -1122,8 +1916,8 @@ fn App() -> impl IntoView {
 
             // --- Hauptbereich: Chat & RAG-Quellen-Inspektor ---
             <main class="chat-main">
-                <header class="chat-header" style="padding: 0.7rem 1.5rem;">
-                    <div style="font-size: 0.9rem; font-weight: 600; color: #e2e8f0; display: flex; align-items: center; gap: 0.5rem;">
+                <header class="chat-header" style="padding: 0.7rem 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+                    <div style="font-size: 0.9rem; font-weight: 600; color: #e2e8f0; display: flex; align-items: center; gap: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                         <span>"💭"</span>
                         <span>
                             {move || {
@@ -1138,40 +1932,77 @@ fn App() -> impl IntoView {
                         </span>
                     </div>
 
-                    <button
-                        class="btn btn-secondary"
-                        style="padding: 0.35rem 0.75rem; font-size: 0.76rem; display: flex; align-items: center; gap: 0.5rem; border-radius: 999px;"
-                        title=move || if is_en() { "Click to configure RAG, Reranker, and LLM settings" } else { "Klicken, um RAG-, Reranker- und LLM-Einstellungen anzupassen" }
-                        on:click=move |_| {
-                            set_llm_config_status.set(String::new());
-                            set_show_llm_modal.set(true);
-                        }
-                    >
-                        <span>
-                            {move || match (use_rag.get(), is_en()) {
-                                (true, true) => "🟢 RAG active",
-                                (true, false) => "🟢 RAG aktiv",
-                                (false, true) => "⚪ RAG off",
-                                (false, false) => "⚪ RAG aus",
-                            }}
-                        </span>
-                        <span style="color:#475569;">"|"</span>
-                        <span style="color:#a5b4fc; font-weight:600;">
-                            {move || format!("🤖 {}", llm_model_sig.get())}
-                        </span>
-                        <span style="color:#475569;">"|"</span>
-                        <span style="color:#94a3b8;">
-                            {move || {
-                                let r = match reranker_mode.get().as_str() {
-                                    "high" => "🎯 High",
-                                    "none" => "🚀 RRF",
-                                    _ => "⚡ Fast",
-                                };
-                                format!("{} · Top-{}", r, top_n.get())
-                            }}
-                        </span>
-                        <span>"⚙️"</span>
-                    </button>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
+                        <button
+                            class="btn btn-secondary btn-export"
+                            style="padding: 0.35rem 0.75rem; font-size: 0.76rem; display: flex; align-items: center; gap: 0.35rem; border-radius: 999px; cursor: pointer;"
+                            title=move || if is_en() { "Download this chat session as Markdown (.md)" } else { "Diesen Chatverlauf als Markdown (.md) herunterladen" }
+                            on:click=move |_| {
+                                let cur_id = active_session_id.get();
+                                let title = chat_sessions
+                                    .get()
+                                    .into_iter()
+                                    .find(|s| s.id == cur_id)
+                                    .map(|s| s.title)
+                                    .unwrap_or_else(|| if is_en() { "Chat".to_string() } else { "Chat".to_string() });
+                                let model = llm_model_sig.get();
+                                let rag = use_rag.get();
+                                let r_mode = reranker_mode.get();
+                                let tn = top_n.get();
+                                let ctx = num_ctx_sig.get();
+                                let think = think_mode_sig.get();
+                                let msgs = messages.get();
+                                export_active_chat(&title, &model, rag, &r_mode, tn, ctx, think, &msgs);
+                            }
+                        >
+                            <span>"📥"</span>
+                            <span>{move || if is_en() { "Export (.md)" } else { "Export (.md)" }}</span>
+                        </button>
+
+                        <button
+                            class="btn btn-secondary"
+                            style="padding: 0.35rem 0.75rem; font-size: 0.76rem; display: flex; align-items: center; gap: 0.5rem; border-radius: 999px;"
+                            title=move || if is_en() { "Click to configure RAG, Reranker, Context Window & LLM settings" } else { "Klicken, um RAG-, Reranker-, Kontextfenster- und LLM-Einstellungen anzupassen" }
+                            on:click=move |_| {
+                                set_llm_config_status.set(String::new());
+                                set_show_llm_modal.set(true);
+                            }
+                        >
+                            <span>
+                                {move || match (use_rag.get(), is_en()) {
+                                    (true, true) => "🟢 RAG active",
+                                    (true, false) => "🟢 RAG aktiv",
+                                    (false, true) => "⚪ RAG off",
+                                    (false, false) => "⚪ RAG aus",
+                                }}
+                            </span>
+                            <span style="color:#475569;">"|"</span>
+                            <span style="color:#a5b4fc; font-weight:600;">
+                                {move || format!("🤖 {}", llm_model_sig.get())}
+                            </span>
+                            <span style="color:#475569;">"|"</span>
+                            <span style="color:#94a3b8;">
+                                {move || {
+                                    let r = match reranker_mode.get().as_str() {
+                                        "high" => "🎯 High",
+                                        "none" => "🚀 RRF",
+                                        _ => "⚡ Fast",
+                                    };
+                                    let ctx_str = match num_ctx_sig.get() {
+                                        4096 => "4k",
+                                        8192 => "8k",
+                                        16384 => "16k",
+                                        32768 => "32k",
+                                        65536 => "64k",
+                                        _ => "16k",
+                                    };
+                                    let think_ico = if think_mode_sig.get() { "🧠" } else { "⚡" };
+                                    format!("{} · Top-{} · {} · {}", r, top_n.get(), ctx_str, think_ico)
+                                }}
+                            </span>
+                            <span>"⚙️"</span>
+                        </button>
+                    </div>
                 </header>
 
                 <div class="messages-container">
@@ -1184,9 +2015,74 @@ fn App() -> impl IntoView {
                             let content_sig = msg.content;
                             let sources_sig = msg.sources;
                             let metrics_sig = msg.metrics_info;
+                            let (user_think_open, set_user_think_open) = create_signal::<Option<bool>>(None);
                             view! {
                                 <div class=bubble_class>
-                                    <div>{move || content_sig.get()}</div>
+                                    {move || {
+                                        let raw = content_sig.get();
+                                        if is_user {
+                                            view! { <div>{raw}</div> }.into_view()
+                                        } else {
+                                            let (think_opt, answer_md) = parse_think_and_answer(&raw);
+                                            let answer_html = render_markdown_to_html(&answer_md);
+                                            view! {
+                                                <div>
+                                                    {think_opt.map(|(think_md, is_streaming_think)| {
+                                                        let word_count = think_md.split_whitespace().count();
+                                                        let is_open = user_think_open.get().unwrap_or(is_streaming_think);
+                                                        let think_html = render_markdown_to_html(&think_md);
+                                                        view! {
+                                                            <div class="think-box">
+                                                                <div
+                                                                    class="think-header"
+                                                                    on:click=move |_| {
+                                                                        let cur = user_think_open.get().unwrap_or(is_streaming_think);
+                                                                        set_user_think_open.set(Some(!cur));
+                                                                    }
+                                                                >
+                                                                    <span style="display:flex; align-items:center; gap:0.45rem;">
+                                                                        <span>{if is_open { "▼" } else { "▶" }}</span>
+                                                                        <span class=if is_streaming_think { "thinking-pulse" } else { "" }>"🧠"</span>
+                                                                        <span>
+                                                                            {if is_streaming_think {
+                                                                                if is_en() {
+                                                                                    format!("Thinking… ({} words)", word_count)
+                                                                                } else {
+                                                                                    format!("Denkt nach… ({} Wörter)", word_count)
+                                                                                }
+                                                                            } else if is_en() {
+                                                                                format!("Thought Process ({} words)", word_count)
+                                                                            } else {
+                                                                                format!("Gedankengang ({} Wörter)", word_count)
+                                                                            }}
+                                                                        </span>
+                                                                    </span>
+                                                                    <span style="font-size:0.72rem; color:#818cf8; font-weight:500;">
+                                                                        {if is_open {
+                                                                            if is_en() { "Click to collapse" } else { "Einklappen" }
+                                                                        } else if is_en() {
+                                                                            "Click to expand"
+                                                                        } else {
+                                                                            "Ausklappen"
+                                                                        }}
+                                                                    </span>
+                                                                </div>
+                                                                {is_open.then(|| view! {
+                                                                    <div class="think-body">
+                                                                        <div class="md-content" inner_html=think_html></div>
+                                                                    </div>
+                                                                })}
+                                                            </div>
+                                                        }
+                                                    })}
+
+                                                    {(!answer_md.is_empty()).then(|| view! {
+                                                        <div class="md-content" inner_html=answer_html></div>
+                                                    })}
+                                                </div>
+                                            }.into_view()
+                                        }
+                                    }}
 
                                     {move || metrics_sig.get().map(|m_txt| view! {
                                         <div style="margin-top: 0.65rem; padding-top: 0.45rem; border-top: 1px dashed #334155; font-size: 0.74rem; color: #38bdf8;">
@@ -1197,14 +2093,22 @@ fn App() -> impl IntoView {
                                     {move || {
                                         let srcs = sources_sig.get();
                                         let srcs_count = srcs.len();
+                                        let total_rels: usize = srcs.iter().map(|s| s.relations.len()).sum();
                                         (!srcs.is_empty()).then(|| view! {
                                             <div class="sources-box">
                                                 <details>
                                                     <summary style="cursor:pointer; color:#a5b4fc; font-weight:600;">
-                                                        {move || if is_en() {
-                                                            format!("🔍 {} SurrealDB sources used (HNSW + BM25 + Reranker)", srcs_count)
-                                                        } else {
-                                                            format!("🔍 {} verwendete SurrealDB-Quellen (HNSW + BM25 + Reranker)", srcs_count)
+                                                        {move || {
+                                                            let rel_text = if total_rels > 0 {
+                                                                format!(" + 🕸️ {} Relations", total_rels)
+                                                            } else {
+                                                                String::new()
+                                                            };
+                                                            if is_en() {
+                                                                format!("🔍 {} SurrealDB sources used (HNSW + BM25 + Reranker{})", srcs_count, rel_text)
+                                                            } else {
+                                                                format!("🔍 {} verwendete SurrealDB-Quellen (HNSW + BM25 + Reranker{})", srcs_count, rel_text)
+                                                            }
                                                         }}
                                                     </summary>
                                                     {srcs.clone().into_iter().enumerate().map(|(i, src)| {
@@ -1220,6 +2124,7 @@ fn App() -> impl IntoView {
                                                                 graph_tags.push(tag);
                                                             }
                                                         }
+                                                        let relations_list = src.relations.clone();
                                                         view! {
                                                             <div class="source-item">
                                                                 <div>
@@ -1239,9 +2144,28 @@ fn App() -> impl IntoView {
                                                                 {(!graph_tags.is_empty()).then(|| view! {
                                                                     <div style="margin-top:6px; padding-top:5px; border-top:1px dotted #334155; font-size:0.74rem; color:#c084fc;">
                                                                         <strong>
-                                                                            {move || if is_en() { "🕸️ Knowledge Graph: " } else { "🕸️ Wissensgraph: " }}
+                                                                            {move || if is_en() { "🏷️ Entities: " } else { "🏷️ Entitäten: " }}
                                                                         </strong>
                                                                         {graph_tags.join(" · ")}
+                                                                    </div>
+                                                                })}
+                                                                {(!relations_list.is_empty()).then(|| view! {
+                                                                    <div style="margin-top:8px; padding:7px 10px; background:rgba(99, 102, 241, 0.08); border:1px solid rgba(99, 102, 241, 0.3); border-radius:6px; font-size:0.75rem;">
+                                                                        <div style="color:#a5b4fc; font-weight:700; margin-bottom:5px; display:flex; align-items:center; gap:5px;">
+                                                                            <span>"🕸️"</span>
+                                                                            <span>{move || if is_en() { "Knowledge Graph Relationships:" } else { "Wissensgraph-Beziehungen (GraphRAG):" }}</span>
+                                                                        </div>
+                                                                        <div style="display:flex; flex-wrap:wrap; gap:5px;">
+                                                                            {relations_list.into_iter().map(|rel| {
+                                                                                view! {
+                                                                                    <span style="display:inline-flex; align-items:center; gap:4px; background:#1e1b4b; border:1px solid #4338ca; color:#e0e7ff; padding:2px 8px; border-radius:4px; font-size:0.72rem;">
+                                                                                        <strong style="color:#c7d2fe;">{rel.from}</strong>
+                                                                                        <span style="color:#818cf8; font-size:0.68rem; font-weight:600;">"➔ [" {rel.relation} "] ➔"</span>
+                                                                                        <strong style="color:#38bdf8;">{rel.to}</strong>
+                                                                                    </span>
+                                                                                }
+                                                                            }).collect_view()}
+                                                                        </div>
                                                                     </div>
                                                                 })}
                                                             </div>
@@ -1262,7 +2186,7 @@ fn App() -> impl IntoView {
                     if is_extracting_attachment.get() {
                         view! {
                             <div style="margin: 0 1.25rem 0.5rem 1.25rem; padding: 0.6rem 0.9rem; background: #1e293b; border: 1px solid #38bdf8; border-radius: 8px; color: #38bdf8; font-size: 0.83rem; display: flex; align-items: center; gap: 0.5rem;">
-                                <span>"⏳ Lese Datei im Arbeitsspeicher (inkl. OCR bei Scans, keine DB-Speicherung)..."</span>
+                                <span>{move || if is_en() { "⏳ Reading file in RAM (incl. OCR for scans, no database storage)..." } else { "⏳ Lese Datei im Arbeitsspeicher (inkl. OCR bei Scans, keine DB-Speicherung)..." }}</span>
                             </div>
                         }.into_view()
                     } else if let Some(err) = attachment_error.get() {
@@ -1282,10 +2206,16 @@ fn App() -> impl IntoView {
                         view! {
                             <div style="margin: 0 1.25rem 0.5rem 1.25rem; padding: 0.55rem 0.9rem; background: #0f172a; border: 1px solid #6366f1; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem; font-size: 0.82rem;">
                                 <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                    <span class="badge" style="background: #4f46e5; color: #fff;">"📎 Temporär im RAM"</span>
+                                    <span class="badge" style="background: #4f46e5; color: #fff;">
+                                        {move || if is_en() { "📎 In-Memory Attachment" } else { "📎 Temporär im RAM" }}
+                                    </span>
                                     <strong style="color: #f8fafc;">{att.filename}</strong>
                                     <span style="color: #94a3b8;">
-                                        {format!("({} Zeichen · {} Chunks · nicht in DB)", att.char_count, att.chunk_count)}
+                                        {move || if is_en() {
+                                            format!("({} chars · {} chunks · not in DB)", att.char_count, att.chunk_count)
+                                        } else {
+                                            format!("({} Zeichen · {} Chunks · nicht in DB)", att.char_count, att.chunk_count)
+                                        }}
                                     </span>
                                 </div>
                                 <div style="display: flex; align-items: center; gap: 0.65rem;">
@@ -1296,16 +2226,16 @@ fn App() -> impl IntoView {
                                             set_attachment_only.set(event_target_value(&ev) == "only");
                                         }
                                     >
-                                        <option value="only" selected>"📄 Nur diesen Anhang befragen"</option>
-                                        <option value="combine">"🔗 Anhang + SurrealDB kombinieren"</option>
+                                        <option value="only" selected>{move || if is_en() { "📄 Query this attachment only" } else { "📄 Nur diesen Anhang befragen" }}</option>
+                                        <option value="combine">{move || if is_en() { "🔗 Combine attachment + SurrealDB" } else { "🔗 Anhang + SurrealDB kombinieren" }}</option>
                                     </select>
                                     <button
                                         class="btn btn-secondary"
                                         style="padding: 0.25rem 0.6rem; font-size: 0.76rem; background: #7f1d1d; color: #fecaca;"
-                                        title="Anhang aus dem Chat entfernen"
+                                        title=move || if is_en() { "Remove attachment from chat" } else { "Anhang aus dem Chat entfernen" }
                                         on:click=move |_| set_chat_attachment.set(None)
                                     >
-                                        "✕ Anhang entfernen"
+                                        {move || if is_en() { "✕ Remove attachment" } else { "✕ Anhang entfernen" }}
                                     </button>
                                 </div>
                             </div>
@@ -1370,25 +2300,60 @@ fn App() -> impl IntoView {
             </main>
 
             // --- Modal-Dialog für Wissen einspeisen & Multi-File Upload ---
-            {move || show_ingest_modal.get().then(|| view! {
-                <div class="modal-backdrop">
-                    <div class="modal-dialog">
-                        <div class="modal-header">
-                            <h2>
-                                {move || if is_en() {
-                                    "📚 Ingest Knowledge into SurrealDB"
-                                } else {
-                                    "📚 Wissen in SurrealDB einspeisen"
-                                }}
-                            </h2>
-                            <button
-                                class="btn btn-secondary"
-                                style="padding: 0.35rem 0.75rem;"
-                                on:click=move |_| set_show_ingest_modal.set(false)
-                            >
-                                {move || if is_en() { "✕ Close" } else { "✕ Schließen" }}
-                            </button>
-                        </div>
+            {move || show_ingest_modal.get().then(|| {
+                let is_fs = is_modal_fullscreen.get();
+                let is_docs_tab = modal_tab.get() == "docs";
+                let backdrop_class = if is_fs { "modal-backdrop fullscreen" } else { "modal-backdrop" };
+                let dialog_class = if is_fs {
+                    "modal-dialog fullscreen"
+                } else if is_docs_tab {
+                    "modal-dialog wide"
+                } else {
+                    "modal-dialog"
+                };
+
+                view! {
+                    <div class=backdrop_class>
+                        <div class=dialog_class>
+                            <div class="modal-header">
+                                <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                                    {move || if modal_tab.get() == "docs" {
+                                        if is_en() {
+                                            "🗂️ Stored Documents & Knowledge Base"
+                                        } else {
+                                            "🗂️ Gespeicherte Dokumente & Wissensbasis"
+                                        }
+                                    } else if is_en() {
+                                        "📚 Ingest Knowledge into SurrealDB"
+                                    } else {
+                                        "📚 Wissen in SurrealDB einspeisen"
+                                    }}
+                                </h2>
+                                <div style="display:flex; align-items:center; gap:0.5rem;">
+                                    <button
+                                        class="btn btn-secondary"
+                                        style="padding:0.35rem 0.65rem; font-size:0.8rem;"
+                                        title=move || if is_en() { "Toggle Fullscreen" } else { "Vollbild umschalten" }
+                                        on:click=move |_| set_is_modal_fullscreen.update(|fs| *fs = !*fs)
+                                    >
+                                        {move || if is_modal_fullscreen.get() {
+                                            if is_en() { "🗗 Restore" } else { "🗗 Fenster" }
+                                        } else {
+                                            if is_en() { "⛶ Fullscreen" } else { "⛶ Vollbild" }
+                                        }}
+                                    </button>
+                                    <button
+                                        class="btn btn-secondary"
+                                        style="padding: 0.35rem 0.75rem; font-size:0.8rem;"
+                                        on:click=move |_| {
+                                            set_show_ingest_modal.set(false);
+                                            set_is_modal_fullscreen.set(false);
+                                        }
+                                    >
+                                        {move || if is_en() { "✕ Close" } else { "✕ Schließen" }}
+                                    </button>
+                                </div>
+                            </div>
 
                         <div class="modal-tabs">
                             <button
@@ -1477,7 +2442,7 @@ fn App() -> impl IntoView {
                                             </div>
                                         </div>
 
-                                        // Verstecktes natives File-Input mit `multiple`, gesteuert über das moderne Dropzone-Label
+                                        // Verstecktes natives File-Input für einzelne/mehrere Dateien
                                         <input
                                             type="file"
                                             id="multi-file-upload"
@@ -1487,23 +2452,44 @@ fn App() -> impl IntoView {
                                             node_ref=file_input_ref
                                             on:change=on_files_selected
                                         />
-                                        <label for="multi-file-upload" class="dropzone-label">
+
+                                        // Verstecktes natives File-Input für ganze Ordnerstrukturen
+                                        <input
+                                            type="file"
+                                            id="multi-folder-upload"
+                                            multiple=true
+                                            attr:webkitdirectory=""
+                                            attr:directory=""
+                                            style="display:none;"
+                                            node_ref=folder_input_ref
+                                            on:change=on_files_selected
+                                        />
+
+                                        <div class="dropzone-label">
                                             <div class="dropzone-icon">"📂"</div>
                                             <div style="font-weight:600; color:#f8fafc; font-size:0.95rem;">
                                                 {move || if is_en() {
-                                                    "Click to select one or multiple files"
+                                                    "Select Files or an Entire Folder"
                                                 } else {
-                                                    "Klicken, um eine oder mehrere Dateien auszuwählen"
+                                                    "Dateien oder ganzen Ordner auswählen"
                                                 }}
                                             </div>
-                                            <div style="font-size:0.78rem; color:#94a3b8;">
+                                            <div style="font-size:0.78rem; color:#94a3b8; max-width:440px; text-align:center;">
                                                 {move || if is_en() {
-                                                    "Supports batch upload: PDF (incl. automatic OCR for scans), Markdown, HTML, TXT"
+                                                    "Select individual files or a complete folder hierarchy (subfolder names are automatically assigned as document categories & graph projects)."
                                                 } else {
-                                                    "Unterstützt Multi-Upload: PDF (inkl. automatischem OCR für Scans), Markdown, HTML, TXT"
+                                                    "Wähle einzelne Dateien oder einen Ordner (Unterordner werden automatisch als Kategorie & Graph-Gruppe übernommen)."
                                                 }}
                                             </div>
-                                        </label>
+                                            <div style="display:flex; gap:0.65rem; margin-top:0.4rem;">
+                                                <label for="multi-file-upload" class="btn btn-secondary" style="cursor:pointer; font-size:0.8rem; padding:0.45rem 0.85rem;">
+                                                    "📄 " {move || if is_en() { "Select Files" } else { "Dateien wählen" }}
+                                                </label>
+                                                <label for="multi-folder-upload" class="btn btn-secondary" style="cursor:pointer; font-size:0.8rem; padding:0.45rem 0.85rem; border-color:#6366f1; color:#c7d2fe; background:rgba(99, 102, 241, 0.15);">
+                                                    "📁 " {move || if is_en() { "Select Folder (Batch)" } else { "Ordner wählen (Batch)" }}
+                                                </label>
+                                            </div>
+                                        </div>
 
                                         // Liste der ausgewählten Dateien als moderne Badges/Pills
                                         {move || (!selected_file_names.get().is_empty()).then(|| view! {
@@ -1622,104 +2608,372 @@ fn App() -> impl IntoView {
                                     </div>
                                 }.into_view()
                             } else {
+                                // Tab "docs" -> Strukturierte Dokumentenanzeige
                                 view! {
-                                    <div style="display:flex; flex-direction:column; gap:0.9rem;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
-                                            <span style="font-size:0.85rem; color:#94a3b8;">
-                                                {move || {
-                                                    let docs = stored_docs.get();
-                                                    let total_c: usize = docs.iter().map(|d| d.chunk_count).sum();
-                                                    if is_en() {
-                                                        format!("📊 {} document(s) with {} total vector chunks in SurrealDB", docs.len(), total_c)
-                                                    } else {
-                                                        format!("📊 {} Dokument(e) mit insgesamt {} Vektor-Chunks in SurrealDB", docs.len(), total_c)
-                                                    }
-                                                }}
-                                            </span>
-                                            <div style="display:flex; gap:0.5rem;">
-                                                <button
-                                                    class="btn btn-secondary"
-                                                    style="padding:0.35rem 0.7rem; font-size:0.78rem;"
-                                                    on:click=move |_| {
-                                                        spawn_local(async move {
-                                                            if let Ok(resp) = Request::post("/v1/documents/deduplicate").send().await {
-                                                                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                                                    let rem = json["removed_documents"].as_u64().unwrap_or(0);
-                                                                    let msg = if is_en() {
-                                                                        format!("🧹 Pruned {} older duplicate revision(s)!", rem)
-                                                                    } else {
-                                                                        format!("🧹 {} ältere Duplikat-Einträge bereinigt!", rem)
-                                                                    };
-                                                                    set_ingest_status.set(msg);
-                                                                    refresh_documents();
-                                                                }
-                                                            }
-                                                        });
-                                                    }
-                                                >
-                                                    {move || if is_en() { "🧹 Prune Old Revisions" } else { "🧹 Alte Duplikate bereinigen" }}
-                                                </button>
-                                                <button
-                                                    class="btn btn-secondary"
-                                                    style="padding:0.35rem 0.7rem; font-size:0.78rem;"
-                                                    on:click=move |_| refresh_documents()
-                                                >
-                                                    {move || if is_en() { "🔄 Refresh" } else { "🔄 Aktualisieren" }}
-                                                </button>
-                                            </div>
-                                        </div>
+                                    <div style="display:flex; flex-direction:column; gap:1rem; height:100%;">
+                                        // 1. Stats Bar & Aktionen (Deduplicate, Refresh)
+                                        {move || {
+                                            let docs = stored_docs.get();
+                                            let total_chunks: usize = docs.iter().map(|d| d.chunk_count).sum();
+                                            let mut cat_counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                                            for d in &docs {
+                                                let (cat, _) = parse_category_and_title(&d.doc_title);
+                                                *cat_counts.entry(cat).or_insert(0) += 1;
+                                            }
+                                            let total_categories = cat_counts.len();
 
+                                            view! {
+                                                <div class="docs-stats-bar">
+                                                    <div class="docs-stat-badges">
+                                                        <div class="docs-stat-badge">
+                                                            <span>"📁"</span>
+                                                            <span>{move || if is_en() { "Categories: " } else { "Kategorien: " }}</span>
+                                                            <strong>{total_categories}</strong>
+                                                        </div>
+                                                        <div class="docs-stat-badge">
+                                                            <span>"📄"</span>
+                                                            <span>{move || if is_en() { "Documents: " } else { "Dokumente: " }}</span>
+                                                            <strong>{docs.len()}</strong>
+                                                        </div>
+                                                        <div class="docs-stat-badge">
+                                                            <span>"🧩"</span>
+                                                            <span>{move || if is_en() { "Total Chunks: " } else { "Chunks gesamt: " }}</span>
+                                                            <strong>{total_chunks}</strong>
+                                                        </div>
+                                                    </div>
+
+                                                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                                                        <button
+                                                            class="btn btn-secondary"
+                                                            style="padding:0.35rem 0.7rem; font-size:0.78rem;"
+                                                            title=move || if is_en() { "Remove older versions of documents with the same name" } else { "Ältere Versionen gleichnamiger Dokumente entfernen" }
+                                                            on:click=move |_| {
+                                                                spawn_local(async move {
+                                                                    if let Ok(resp) = Request::post("/v1/documents/deduplicate").send().await {
+                                                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                                                            let rem = json["removed_documents"].as_u64().unwrap_or(0);
+                                                                            let msg = if is_en() {
+                                                                                format!("🧹 Pruned {} older duplicate revision(s)!", rem)
+                                                                            } else {
+                                                                                format!("🧹 {} ältere Duplikat-Einträge bereinigt!", rem)
+                                                                            };
+                                                                            set_ingest_status.set(msg);
+                                                                            refresh_documents();
+                                                                        }
+                                                                    }
+                                                                });
+                                                            }
+                                                        >
+                                                            {move || if is_en() { "🧹 Prune Duplicates" } else { "🧹 Duplikate bereinigen" }}
+                                                        </button>
+                                                        <button
+                                                            class="btn btn-secondary"
+                                                            style="padding:0.35rem 0.7rem; font-size:0.78rem;"
+                                                            on:click=move |_| refresh_documents()
+                                                        >
+                                                            {move || if is_en() { "🔄 Refresh" } else { "🔄 Aktualisieren" }}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }}
+
+                                        // 2. Suche & Aufklappbarer Kategorie-Filter (in EINER Zeile)
+                                        {move || {
+                                            let docs = stored_docs.get();
+                                            if docs.is_empty() {
+                                                view! { <div></div> }.into_view()
+                                            } else {
+                                                let mut cat_counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                                                for d in &docs {
+                                                    let (cat, _) = parse_category_and_title(&d.doc_title);
+                                                    *cat_counts.entry(cat).or_insert(0) += 1;
+                                                }
+
+                                                let current_cat = selected_category_filter.get();
+                                                let is_filtered = current_cat != "all";
+                                                let total_cats = cat_counts.len();
+
+                                                view! {
+                                                    <div class="docs-filter-bar">
+                                                        <div class="docs-search-filter-row">
+                                                            <input
+                                                                class="docs-search-input"
+                                                                type="text"
+                                                                placeholder=move || if is_en() {
+                                                                    "🔍 Search documents by title, folder, or ID..."
+                                                                } else {
+                                                                    "🔍 Dokumente nach Titel, Ordner oder ID durchsuchen..."
+                                                                }
+                                                                prop:value=move || doc_search_term.get()
+                                                                on:input=move |ev| set_doc_search_term.set(event_target_value(&ev))
+                                                            />
+
+                                                            <button
+                                                                class=move || {
+                                                                    if is_filter_expanded.get() || is_filtered {
+                                                                        "docs-filter-expand-btn active"
+                                                                    } else {
+                                                                        "docs-filter-expand-btn"
+                                                                    }
+                                                                }
+                                                                title=move || if is_en() { "Toggle Category Filter list" } else { "Kategorien-Filterliste ein-/ausklappen" }
+                                                                on:click=move |_| set_is_filter_expanded.update(|exp| *exp = !*exp)
+                                                            >
+                                                                <span>"📁"</span>
+                                                                <span>
+                                                                    {if is_filtered {
+                                                                        format!("Filter: {} ▾", current_cat)
+                                                                    } else {
+                                                                        format!("Categories ({}) ▾", total_cats)
+                                                                    }}
+                                                                </span>
+                                                            </button>
+
+                                                            {if is_filtered {
+                                                                view! {
+                                                                    <button
+                                                                        class="btn btn-secondary"
+                                                                        style="padding:0.45rem 0.65rem; font-size:0.78rem;"
+                                                                        title=move || if is_en() { "Clear category filter" } else { "Kategorie-Filter aufheben" }
+                                                                        on:click=move |_| set_selected_category_filter.set("all".to_string())
+                                                                    >
+                                                                        "✕"
+                                                                    </button>
+                                                                }.into_view()
+                                                            } else {
+                                                                view! { <span></span> }.into_view()
+                                                            }}
+                                                        </div>
+
+                                                        {move || is_filter_expanded.get().then(|| {
+                                                            let c_cat = selected_category_filter.get();
+                                                            let cats_clone = cat_counts.clone();
+                                                            let total_docs_len = docs.len();
+
+                                                            view! {
+                                                                <div class="docs-categories-popover">
+                                                                    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(51,65,85,0.4); padding-bottom:0.4rem;">
+                                                                        <span style="font-size:0.75rem; color:#94a3b8; font-weight:600;">
+                                                                            {move || if is_en() {
+                                                                                "Select category to filter view:"
+                                                                            } else {
+                                                                                "Kategorie zur Ansichtsfilterung wählen:"
+                                                                            }}
+                                                                        </span>
+                                                                        <button
+                                                                            class="btn btn-secondary"
+                                                                            style="padding:0.2rem 0.5rem; font-size:0.72rem;"
+                                                                            on:click=move |_| set_is_filter_expanded.set(false)
+                                                                        >
+                                                                            {move || if is_en() { "Close ✕" } else { "Schließen ✕" }}
+                                                                        </button>
+                                                                    </div>
+
+                                                                    <div class="category-filter-chips">
+                                                                        <button
+                                                                            class=if c_cat == "all" { "category-chip active" } else { "category-chip" }
+                                                                            on:click=move |_| set_selected_category_filter.set("all".to_string())
+                                                                        >
+                                                                            {move || if is_en() {
+                                                                                format!("All ({})", total_docs_len)
+                                                                            } else {
+                                                                                format!("Alle ({})", total_docs_len)
+                                                                            }}
+                                                                        </button>
+
+                                                                        {cats_clone.into_iter().map(|(cat_name, count)| {
+                                                                            let c_name_click = cat_name.clone();
+                                                                            let is_active = c_cat.eq_ignore_ascii_case(&cat_name);
+                                                                            let chip_class = if is_active { "category-chip active" } else { "category-chip" };
+                                                                            view! {
+                                                                                <button
+                                                                                    class=chip_class
+                                                                                    on:click=move |_| {
+                                                                                        if is_active {
+                                                                                            set_selected_category_filter.set("all".to_string());
+                                                                                        } else {
+                                                                                            set_selected_category_filter.set(c_name_click.clone());
+                                                                                        }
+                                                                                    }
+                                                                                >
+                                                                                    {format!("📁 {} ({})", cat_name, count)}
+                                                                                </button>
+                                                                            }
+                                                                        }).collect_view()}
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        })}
+                                                    </div>
+                                                }.into_view()
+                                            }
+                                        }}
+
+                                        // 3. Gruppierte Anzeige der Dokumente nach Kategorien
                                         {move || {
                                             let docs = stored_docs.get();
                                             if docs.is_empty() {
                                                 view! {
-                                                    <div style="padding:2rem; text-align:center; color:#64748b; border:1px dashed #334155; border-radius:8px;">
-                                                        {move || if is_en() { "No documents stored in SurrealDB yet." } else { "Noch keine Dokumente in SurrealDB gespeichert." }}
+                                                    <div style="padding:2.5rem; text-align:center; color:#64748b; border:1px dashed #334155; border-radius:8px;">
+                                                        <div style="font-size:2rem; margin-bottom:0.5rem;">"📂"</div>
+                                                        <strong style="display:block; color:#94a3b8; font-size:0.95rem;">
+                                                            {move || if is_en() { "No documents stored in SurrealDB yet." } else { "Noch keine Dokumente in SurrealDB gespeichert." }}
+                                                        </strong>
+                                                        <span style="font-size:0.8rem; color:#64748b;">
+                                                            {move || if is_en() { "Upload files or paste markdown to build your knowledge base." } else { "Lade Dateien hoch oder füge Markdown-Texte ein, um deine Wissensbasis aufzubauen." }}
+                                                        </span>
                                                     </div>
                                                 }.into_view()
                                             } else {
-                                                view! {
-                                                    <div style="display:flex; flex-direction:column; gap:0.5rem; max-height:360px; overflow-y:auto;">
-                                                        {docs.into_iter().map(|doc| {
-                                                            let id_for_del = doc.doc_id.clone();
-                                                            let title_for_del = doc.doc_title.clone();
-                                                            view! {
-                                                                <div class="file-pill" style="padding:0.65rem 0.85rem;">
-                                                                    <div style="display:flex; flex-direction:column; gap:2px;">
-                                                                        <strong style="color:#f8fafc; font-size:0.86rem;">"📄 " {doc.doc_title}</strong>
-                                                                        <span style="color:#94a3b8; font-size:0.74rem;">
-                                                                            {format!("{} Chunks · {} · ID: {}", doc.chunk_count, doc.created_at, doc.doc_id)}
-                                                                        </span>
-                                                                    </div>
-                                                                    <button
-                                                                        class="btn btn-secondary"
-                                                                        style="padding:0.3rem 0.65rem; font-size:0.76rem; color:#fca5a5; border-color:#7f1d1d;"
-                                                                        on:click=move |_| {
-                                                                            let del_id = id_for_del.clone();
-                                                                            let del_title = title_for_del.clone();
-                                                                            spawn_local(async move {
-                                                                                let url = format!("/v1/documents/{}", del_id);
-                                                                                if let Ok(resp) = Request::delete(&url).send().await {
-                                                                                    if resp.ok() {
-                                                                                        let msg = if is_en() {
-                                                                                            format!("🗑️ '{}' and all associated vector chunks deleted.", del_title)
-                                                                                        } else {
-                                                                                            format!("🗑️ '{}' wurde samt allen Vektor-Chunks gelöscht.", del_title)
-                                                                                        };
-                                                                                        set_ingest_status.set(msg);
-                                                                                        refresh_documents();
-                                                                                    }
+                                                let search_term = doc_search_term.get().trim().to_lowercase();
+                                                let selected_cat = selected_category_filter.get();
+
+                                                let mut grouped: std::collections::BTreeMap<String, Vec<DocumentItem>> = std::collections::BTreeMap::new();
+
+                                                for doc in docs {
+                                                    let (cat, _clean_title) = parse_category_and_title(&doc.doc_title);
+                                                    
+                                                    // Kategorie-Filter
+                                                    if selected_cat != "all" && !cat.eq_ignore_ascii_case(&selected_cat) {
+                                                        continue;
+                                                    }
+
+                                                    // Suchfilter
+                                                    if !search_term.is_empty() {
+                                                        let matches = doc.doc_title.to_lowercase().contains(&search_term)
+                                                            || doc.doc_id.to_lowercase().contains(&search_term)
+                                                            || cat.to_lowercase().contains(&search_term);
+                                                        if !matches {
+                                                            continue;
+                                                        }
+                                                    }
+
+                                                    grouped.entry(cat).or_default().push(doc);
+                                                }
+
+                                                if grouped.is_empty() {
+                                                    view! {
+                                                        <div style="padding:2.5rem; text-align:center; color:#64748b; border:1px dashed #334155; border-radius:8px;">
+                                                            <div style="font-size:2rem; margin-bottom:0.5rem;">"🔍"</div>
+                                                            <span style="font-size:0.9rem; color:#94a3b8;">
+                                                                {move || if is_en() {
+                                                                    "No documents match the current filter or search criteria."
+                                                                } else {
+                                                                    "Keine Dokumente für die aktuellen Filter- oder Suchkriterien gefunden."
+                                                                }}
+                                                            </span>
+                                                        </div>
+                                                    }.into_view()
+                                                } else {
+                                                    view! {
+                                                        <div style="display:flex; flex-direction:column; gap:1.1rem; overflow-y:auto; padding-right:0.25rem;">
+                                                            {grouped.into_iter().map(|(cat_name, cat_docs)| {
+                                                                let cat_chunks: usize = cat_docs.iter().map(|d| d.chunk_count).sum();
+                                                                let cat_count = cat_docs.len();
+                                                                view! {
+                                                                    <div class="category-section">
+                                                                        <div class="category-section-header">
+                                                                            <span class="category-title">
+                                                                                <span>"📁"</span>
+                                                                                <span>{cat_name}</span>
+                                                                            </span>
+                                                                            <span class="category-badge-count">
+                                                                                {move || if is_en() {
+                                                                                    format!("{} docs · {} chunks", cat_count, cat_chunks)
+                                                                                } else {
+                                                                                    format!("{} Dok. · {} Chunks", cat_count, cat_chunks)
+                                                                                }}
+                                                                            </span>
+                                                                        </div>
+
+                                                                        <div class="docs-grid">
+                                                                            {cat_docs.into_iter().map(|doc| {
+                                                                                let id_for_del = doc.doc_id.clone();
+                                                                                let title_for_del = doc.doc_title.clone();
+                                                                                let (_, clean_title) = parse_category_and_title(&doc.doc_title);
+                                                                                let chunk_badge = format!("🧩 {} Chunks", doc.chunk_count);
+                                                                                let date_badge = format!("🕒 {}", doc.created_at);
+                                                                                let id_badge = format!("🏷️ {}", doc.doc_id);
+                                                                                let rel_count = doc.relations.len();
+                                                                                let rels_for_view = doc.relations.clone();
+
+                                                                                view! {
+                                                                                    <div class="doc-card">
+                                                                                        <div class="doc-card-header">
+                                                                                            <span class="doc-card-icon">"📄"</span>
+                                                                                            <span class="doc-card-title" title=doc.doc_title.clone()>
+                                                                                                {clean_title}
+                                                                                            </span>
+                                                                                        </div>
+
+                                                                                        <div class="doc-card-meta">
+                                                                                            <span class="meta-pill">{chunk_badge}</span>
+                                                                                            <span class="meta-pill">{date_badge}</span>
+                                                                                            <span class="meta-pill" title="SurrealDB Record ID">{id_badge}</span>
+
+                                                                                            {if rel_count == 0 {
+                                                                                                view! {
+                                                                                                    <span class="meta-pill" style="opacity:0.55;">
+                                                                                                        "🕸️ 0 Relations"
+                                                                                                    </span>
+                                                                                                }.into_view()
+                                                                                            } else {
+                                                                                                view! {
+                                                                                                    <details class="doc-relations-details">
+                                                                                                        <summary class="doc-relations-summary">
+                                                                                                            <span>{format!("🕸️ {} Relations ▾", rel_count)}</span>
+                                                                                                        </summary>
+                                                                                                        <div class="doc-relations-list">
+                                                                                                            {rels_for_view.into_iter().map(|rel| view! {
+                                                                                                                <div class="doc-relation-item">
+                                                                                                                    <span class="rel-icon">"🔗"</span>
+                                                                                                                    <span>{rel}</span>
+                                                                                                                </div>
+                                                                                                            }).collect_view()}
+                                                                                                        </div>
+                                                                                                    </details>
+                                                                                                }.into_view()
+                                                                                            }}
+                                                                                        </div>
+
+                                                                                        <div class="doc-card-actions">
+                                                                                            <button
+                                                                                                class="btn btn-secondary"
+                                                                                                style="padding:0.25rem 0.55rem; font-size:0.75rem; color:#fca5a5; border-color:#7f1d1d;"
+                                                                                                title=move || if is_en() { "Delete document & vector chunks" } else { "Dokument & Vektor-Chunks löschen" }
+                                                                                                on:click=move |_| {
+                                                                                                    let del_id = id_for_del.clone();
+                                                                                                    let del_title = title_for_del.clone();
+                                                                                                    spawn_local(async move {
+                                                                                                        let url = format!("/v1/documents/{}", del_id);
+                                                                                                        if let Ok(resp) = Request::delete(&url).send().await {
+                                                                                                            if resp.ok() {
+                                                                                                                let msg = if is_en() {
+                                                                                                                    format!("🗑️ '{}' and all associated vector chunks deleted.", del_title)
+                                                                                                                } else {
+                                                                                                                    format!("🗑️ '{}' wurde samt allen Vektor-Chunks gelöscht.", del_title)
+                                                                                                                };
+                                                                                                                set_ingest_status.set(msg);
+                                                                                                                refresh_documents();
+                                                                                                            }
+                                                                                                        }
+                                                                                                    });
+                                                                                                }
+                                                                                            >
+                                                                                                {move || if is_en() { "🗑️ Delete" } else { "🗑️ Löschen" }}
+                                                                                            </button>
+                                                                                        </div>
+                                                                                    </div>
                                                                                 }
-                                                                            });
-                                                                        }
-                                                                    >
-                                                                        {move || if is_en() { "🗑️ Delete" } else { "🗑️ Löschen" }}
-                                                                    </button>
-                                                                </div>
-                                                            }
-                                                        }).collect_view()}
-                                                    </div>
-                                                }.into_view()
+                                                                            }).collect_view()}
+                                                                        </div>
+                                                                    </div>
+                                                                }
+                                                            }).collect_view()}
+                                                        </div>
+                                                    }.into_view()
+                                                }
                                             }
                                         }}
                                     </div>
@@ -1732,7 +2986,8 @@ fn App() -> impl IntoView {
                         </div>
                     </div>
                 </div>
-            })}
+            }
+        })}
 
             // --- Modal-Dialog: Generische LLM-, Remote-GPU- (RunPod) & Cloud-Konfiguration ---
             {move || show_llm_modal.get().then(|| view! {
@@ -1798,7 +3053,7 @@ fn App() -> impl IntoView {
                             </div>
 
                             // --- Sektion A: RAG & Retrieval-Pipeline ---
-                            <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 0.9rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                            <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 0.9rem; display: flex; flex-direction: column; gap: 0.85rem;">
                                 <div style="font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
                                     {move || if is_en() {
                                         "🔍 RAG & Retrieval Pipeline (SurrealDB + TEI)"
@@ -1815,6 +3070,7 @@ fn App() -> impl IntoView {
                                         on:change=move |ev| {
                                             let checked = ev.target().unwrap().unchecked_into::<HtmlInputElement>().checked();
                                             set_use_rag.set(checked);
+                                            save_use_rag_to_storage(checked);
                                         }
                                     />
                                     <label for="rag-toggle-modal" style="margin:0; color:#f8fafc; cursor:pointer; font-size:0.85rem;">
@@ -1826,42 +3082,165 @@ fn App() -> impl IntoView {
                                     </label>
                                 </div>
 
-                                <div style="display: grid; grid-template-columns: 1fr 120px; gap: 0.75rem;">
-                                    <div>
-                                        <label style="font-size:0.76rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
-                                            "Cross-Encoder Reranker"
-                                        </label>
-                                        <select
-                                            prop:value=move || reranker_mode.get()
-                                            on:change=move |ev| {
-                                                set_reranker_mode.set(event_target_value(&ev));
-                                            }
-                                        >
-                                            <option value="fast" selected=move || reranker_mode.get() == "fast">"⚡ Fast: mmarco-mMiniLMv2-L12 (~250ms)"</option>
-                                            <option value="high" selected=move || reranker_mode.get() == "high">"🎯 High: bge-reranker-v2-m3 (~2.2s)"</option>
-                                            <option value="none" selected=move || reranker_mode.get() == "none">
-                                                {move || if is_en() { "🚀 Off: SurrealDB RRF only (0ms)" } else { "🚀 Aus: Nur SurrealDB RRF (0ms)" }}
-                                            </option>
-                                        </select>
+                                // 1. Cross-Encoder Reranker Wahl (Sleek Buttons)
+                                <div>
+                                    <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
+                                        <span>"Cross-Encoder Reranker"</span>
+                                        <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
+                                            {move || match reranker_mode.get().as_str() {
+                                                "high" => "🎯 High (bge-reranker-v2-m3)",
+                                                "none" => "🚀 Aus (Nur SurrealDB RRF)",
+                                                _ => "⚡ Fast (mmarco-mMiniLMv2-L12)",
+                                            }}
+                                        </span>
                                     </div>
-
-                                    <div>
-                                        <label style="font-size:0.76rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
-                                            {move || if is_en() { "Top-N Sources" } else { "Top-N Quellen" }}
-                                        </label>
-                                        <select
-                                            prop:value=move || top_n.get().to_string()
-                                            on:change=move |ev| {
-                                                if let Ok(v) = event_target_value(&ev).parse::<usize>() {
-                                                    set_top_n.set(v);
-                                                }
+                                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+                                        <button
+                                            type="button"
+                                            style=move || if reranker_mode.get() == "fast" {
+                                                "flex:1; min-width:130px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:600; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                            } else {
+                                                "flex:1; min-width:130px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                            }
+                                            on:click=move |_| {
+                                                set_reranker_mode.set("fast".to_string());
+                                                save_reranker_to_storage("fast");
                                             }
                                         >
-                                            <option value="3" selected=move || top_n.get() == 3>"3 Chunks"</option>
-                                            <option value="4" selected=move || top_n.get() == 4>"4 Chunks"</option>
-                                            <option value="6" selected=move || top_n.get() == 6>"6 Chunks"</option>
-                                            <option value="8" selected=move || top_n.get() == 8>"8 Chunks"</option>
-                                        </select>
+                                            "⚡ Fast (~250ms)"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            style=move || if reranker_mode.get() == "high" {
+                                                "flex:1; min-width:130px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:600; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                            } else {
+                                                "flex:1; min-width:130px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                            }
+                                            on:click=move |_| {
+                                                set_reranker_mode.set("high".to_string());
+                                                save_reranker_to_storage("high");
+                                            }
+                                        >
+                                            "🎯 High (~2.2s)"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            style=move || if reranker_mode.get() == "none" {
+                                                "flex:1; min-width:130px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:600; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                            } else {
+                                                "flex:1; min-width:130px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                            }
+                                            on:click=move |_| {
+                                                set_reranker_mode.set("none".to_string());
+                                                save_reranker_to_storage("none");
+                                            }
+                                        >
+                                            {move || if is_en() { "🚀 Off (SurrealDB RRF)" } else { "🚀 Aus (Nur SurrealDB RRF)" }}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                // 2. Top-N Chunks Wahl (Sleek Buttons)
+                                <div>
+                                    <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
+                                        <span>{move || if is_en() { "Top-N Context Chunks to LLM" } else { "Top-N Dokument-Chunks für LLM" }}</span>
+                                        <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
+                                            {move || format!("Top-{} Chunks", top_n.get())}
+                                        </span>
+                                    </div>
+                                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+                                        {[3, 4, 6, 8, 10].into_iter().map(|n| {
+                                            view! {
+                                                <button
+                                                    type="button"
+                                                    style=move || if top_n.get() == n {
+                                                        "flex:1; min-width:65px; padding:0.38rem 0.5rem; font-size:0.78rem; font-weight:700; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                                    } else {
+                                                        "flex:1; min-width:65px; padding:0.38rem 0.5rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                                    }
+                                                    on:click=move |_| {
+                                                        set_top_n.set(n);
+                                                        save_top_n_to_storage(n);
+                                                    }
+                                                >
+                                                    {format!("{} Chunks", n)}
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </div>
+
+                                // 3. LLM Context-Fenster (num_ctx in Tokens)
+                                <div>
+                                    <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
+                                        <span>{move || if is_en() { "LLM Context Window (num_ctx in tokens)" } else { "LLM Kontext-Fenster (num_ctx in Tokens)" }}</span>
+                                        <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
+                                            {move || format!("{} Tokens", num_ctx_sig.get())}
+                                        </span>
+                                    </div>
+                                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+                                        {[(4096u64, "4k"), (8192u64, "8k"), (16384u64, "16k (Default)"), (32768u64, "32k"), (65536u64, "64k")].into_iter().map(|(ctx, lbl)| {
+                                            view! {
+                                                <button
+                                                    type="button"
+                                                    style=move || if num_ctx_sig.get() == ctx {
+                                                        "flex:1; min-width:65px; padding:0.38rem 0.5rem; font-size:0.78rem; font-weight:700; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                                    } else {
+                                                        "flex:1; min-width:65px; padding:0.38rem 0.5rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                                    }
+                                                    on:click=move |_| {
+                                                        set_num_ctx_sig.set(ctx);
+                                                        save_num_ctx_to_storage(ctx);
+                                                    }
+                                                >
+                                                    {lbl}
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </div>
+
+                                // 4. Reasoning / Denkmodus (DeepSeek-R1, QwQ)
+                                <div>
+                                    <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
+                                        <span>{move || if is_en() { "Thinking / Reasoning Mode (DeepSeek-R1, QwQ)" } else { "Denkprozess / Reasoning (DeepSeek-R1, QwQ)" }}</span>
+                                        <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
+                                            {move || if think_mode_sig.get() {
+                                                if is_en() { "🧠 Thinking visible" } else { "🧠 Denken aktiv" }
+                                            } else {
+                                                if is_en() { "⚡ Direct Answer" } else { "⚡ Direkte Antwort" }
+                                            }}
+                                        </span>
+                                    </div>
+                                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+                                        <button
+                                            type="button"
+                                            style=move || if think_mode_sig.get() {
+                                                "flex:1; min-width:140px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:600; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                            } else {
+                                                "flex:1; min-width:140px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                            }
+                                            on:click=move |_| {
+                                                set_think_mode_sig.set(true);
+                                                save_think_to_storage(true);
+                                            }
+                                        >
+                                            {move || if is_en() { "🧠 Thinking ON (<think> steps)" } else { "🧠 Denken AN (inkl. Denkschritte)" }}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            style=move || if !think_mode_sig.get() {
+                                                "flex:1; min-width:140px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:600; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                            } else {
+                                                "flex:1; min-width:140px; padding:0.4rem 0.6rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                            }
+                                            on:click=move |_| {
+                                                set_think_mode_sig.set(false);
+                                                save_think_to_storage(false);
+                                            }
+                                        >
+                                            {move || if is_en() { "⚡ Fast (Suppress <think>)" } else { "⚡ Schnell (Ohne Denkschritte)" }}
+                                        </button>
                                     </div>
                                 </div>
                             </div>
