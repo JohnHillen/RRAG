@@ -138,6 +138,24 @@ async fn main() -> Result<()> {
         config: config.clone(),
     };
 
+    // Load persisted system LLM settings from SurrealDB (survives restarts & setup.sh)
+    let db_clone = state.db.clone();
+    let llm_clone = state.llm.clone();
+    tokio::spawn(async move {
+        // Wait briefly for SurrealDB to finish initial container healthcheck if starting concurrently
+        for _ in 0..15 {
+            if let Ok(Some((prov, url, key, model))) = db_clone.get_system_llm_settings().await {
+                llm_clone.update_runtime_config(prov.clone(), url.clone(), key, model.clone());
+                info!(
+                    "Restored persisted LLM configuration from SurrealDB -> Provider: {}, Model: {}",
+                    prov, model
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+    });
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/v1/models", get(list_models_handler))
@@ -212,13 +230,25 @@ async fn update_llm_config_handler(
     let updated = state.llm.update_runtime_config(
         req.llm_provider,
         req.llm_base_url,
-        req.llm_api_key,
+        req.llm_api_key.clone(),
         req.llm_model,
     );
     info!(
         "LLM configuration updated live -> Provider: {}, URL: {}, Model: {}",
         updated.llm_provider, updated.llm_base_url, updated.llm_model
     );
+
+    // Persist to SurrealDB so the user's selected model survives restarts & setup.sh
+    let _ = state
+        .db
+        .save_system_llm_settings(
+            &updated.llm_provider,
+            &updated.llm_base_url,
+            req.llm_api_key.as_deref().or(Some(&updated.llm_api_key)),
+            &updated.llm_model,
+        )
+        .await;
+
     let available_models = state.llm.discover_models(Some(&updated)).await;
     let has_key = !updated.llm_api_key.is_empty() && updated.llm_api_key != "ollama";
     Json(json!({

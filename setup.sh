@@ -736,11 +736,26 @@ if [[ "$LLM_PROVIDER" == "openai_compatible" ]] && [[ "$LLM_BASE_URL" == *"11434
         fi
     fi
 
-    echo -e "${BLUE}Pre-loading local Ollama model '${LLM_MODEL}' (keep_alive: -1, num_ctx: 4096)...${NC}"
-    if curl -sf http://localhost:11434/api/chat -d "{\"model\": \"${LLM_MODEL}\", \"messages\": [], \"keep_alive\": -1, \"options\": {\"num_ctx\": 4096}}" > /dev/null 2>&1; then
-        echo -e "${GREEN}[OK] '${LLM_MODEL}' is ready and resident in memory (no cold-start delay).${NC}"
+    # Check if the user previously selected another model via Chat-UI (stored in SurrealDB)
+    ACTIVE_TARGET_MODEL="${LLM_MODEL}"
+    SURREAL_SETTING=$(curl -s "http://localhost:${SURREAL_PORT}/sql" \
+        -u "${SURREAL_USER}:${SURREAL_PASS}" \
+        -H "Accept: application/json" \
+        -H "surreal-ns: ${SURREAL_NS}" \
+        -H "surreal-db: ${SURREAL_DB}" \
+        -d "SELECT llm_model FROM system_settings:app;" 2>/dev/null || true)
+    STORED_MODEL=$(echo "$SURREAL_SETTING" | grep -o '"llm_model":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
+    if [[ -n "$STORED_MODEL" && "$STORED_MODEL" != "null" ]]; then
+        ACTIVE_TARGET_MODEL="$STORED_MODEL"
+        echo -e "${GREEN}[PERSISTENCE] Restoring user-selected LLM model from SurrealDB: '${ACTIVE_TARGET_MODEL}'${NC}"
+        update_env_var "LLM_MODEL" "$ACTIVE_TARGET_MODEL"
+    fi
+
+    echo -e "${BLUE}Pre-loading local Ollama model '${ACTIVE_TARGET_MODEL}' (keep_alive: -1, num_ctx: 4096)...${NC}"
+    if curl -sf http://localhost:11434/api/chat -d "{\"model\": \"${ACTIVE_TARGET_MODEL}\", \"messages\": [], \"keep_alive\": -1, \"options\": {\"num_ctx\": 4096}}" > /dev/null 2>&1; then
+        echo -e "${GREEN}[OK] '${ACTIVE_TARGET_MODEL}' is ready and resident in memory (no cold-start delay).${NC}"
     else
-        echo -e "${YELLOW}[NOTICE] Could not preload model '${LLM_MODEL}' at http://localhost:11434. Please check 'ollama list'.${NC}"
+        echo -e "${YELLOW}[NOTICE] Could not preload model '${ACTIVE_TARGET_MODEL}' at http://localhost:11434. Please check 'ollama list'.${NC}"
     fi
 fi
 

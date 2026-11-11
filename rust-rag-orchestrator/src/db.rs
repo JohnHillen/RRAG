@@ -492,6 +492,62 @@ impl SurrealClient {
         results.truncate(top_k);
         Ok(results)
     }
+
+    /// Deletes all documents, chunks, graph entities and relations.
+    pub async fn delete_all_data(&self) -> Result<()> {
+        let sql = r#"
+            DELETE chunk;
+            DELETE document;
+            DELETE entity;
+            DELETE mentions;
+            DELETE relates_to;
+        "#;
+        self.execute_sql(sql).await?;
+        Ok(())
+    }
+
+    /// Loads persisted system LLM settings from SurrealDB (if saved previously).
+    pub async fn get_system_llm_settings(&self) -> Result<Option<(String, String, Option<String>, String)>> {
+        let sql = "SELECT llm_provider, llm_base_url, llm_api_key, llm_model FROM system_settings:app;";
+        let res = self.execute_sql(sql).await?;
+        if let Some(first_resp) = res.first() {
+            if let Some(arr) = first_resp.get("result").and_then(|v| v.as_array()) {
+                if let Some(item) = arr.first() {
+                    let prov = item.get("llm_provider").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    let url = item.get("llm_base_url").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    let key = item.get("llm_api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let model = item.get("llm_model").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    if !prov.is_empty() && !model.is_empty() {
+                        return Ok(Some((prov, url, key, model)));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Persists system LLM settings into SurrealDB so they survive restarts and setup.sh.
+    pub async fn save_system_llm_settings(
+        &self,
+        provider: &str,
+        base_url: &str,
+        api_key: Option<&str>,
+        model: &str,
+    ) -> Result<()> {
+        let key_json = match api_key {
+            Some(k) if !k.is_empty() => serde_json::to_string(k)?,
+            _ => "NONE".to_string(),
+        };
+        let sql = format!(
+            "UPSERT system_settings:app SET llm_provider = {}, llm_base_url = {}, llm_model = {}, llm_api_key = {}, updated_at = time::now();",
+            serde_json::to_string(provider)?,
+            serde_json::to_string(base_url)?,
+            serde_json::to_string(model)?,
+            key_json
+        );
+        self.execute_sql(&sql).await?;
+        Ok(())
+    }
 }
 
 /// Generates a deterministic 128-bit content hash ID (`h_<32-hex>`) from raw bytes.
