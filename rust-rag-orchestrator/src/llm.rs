@@ -879,8 +879,8 @@ impl LlmClient {
 
         let sample: String = text.chars().take(3500).collect();
         let prompt = format!(
-            r#"Extract key entities (persons, organizations, projects, file references, standards/regulations) and their relationships from the following text as a pure JSON object:
-{{"entities": [{{"name": "...", "entity_type": "Person|Organization|Project|Document|Standard", "description": "..."}}], "relations": [{{"source": "...", "relation": "works_on|belongs_to|guarantees_for|references|regulates", "target": "..."}}]}}
+            r#"Extract key entities (persons, organizations, projects, technical skills/programming languages/databases, language proficiency levels, standards/certifications) and their relationships from the following text as a pure JSON object:
+{{"entities": [{{"name": "...", "entity_type": "Person|Organization|Project|Skill|Certification|Document", "description": "..."}}], "relations": [{{"source": "...", "relation": "works_on|belongs_to|has_skill|requires_skill|guarantees_for|references|regulates", "target": "..."}}]}}
 
 Text:
 {}"#,

@@ -275,22 +275,34 @@ impl InferenceClient {
 
         match resp {
             Ok(r) if r.status().is_success() => {
-                let mut scores: Vec<TeiRerankItem> = r.json().await.unwrap_or_default();
+                let scores: Vec<TeiRerankItem> = r.json().await.unwrap_or_default();
 
-                scores.sort_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                // Combine Cross-Encoder semantic score with normalized RRF + Hop-2 Graph score
+                // so that multi-hop candidates discovered via Hop-2 (e.g. matching skills/entities)
+                // retain a strong structural boost even when the raw Cross-Encoder score is flat.
+                let max_rrf = candidates
+                    .iter()
+                    .map(|c| c.rrf_score)
+                    .fold(0.0_f64, f64::max)
+                    .max(0.001);
 
-                let mut reranked = Vec::with_capacity(top_n.min(scores.len()));
-                for item in scores.into_iter().take(top_n) {
-                    if let Some(chunk) = candidates.get_mut(item.index) {
+                let mut blended: Vec<(f64, RetrievedChunk)> = Vec::with_capacity(scores.len());
+                for item in scores {
+                    if let Some(chunk) = candidates.get(item.index) {
                         let mut c = chunk.clone();
-                        c.rerank_score = Some(item.score);
-                        reranked.push(c);
+                        let norm_rrf = (c.rrf_score / max_rrf).clamp(0.0, 1.0);
+                        let combined_score = (item.score * 0.72) + (norm_rrf * 0.28);
+                        c.rerank_score = Some(combined_score);
+                        blended.push((combined_score, c));
                     }
                 }
+
+                blended.sort_by(|a, b| {
+                    b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                let reranked: Vec<RetrievedChunk> =
+                    blended.into_iter().take(top_n).map(|(_, c)| c).collect();
                 Ok((reranked, active_label))
             }
             _ => {

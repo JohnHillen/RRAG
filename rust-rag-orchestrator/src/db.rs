@@ -493,6 +493,102 @@ impl SurrealClient {
         Ok(results)
     }
 
+    /// 2nd-Hop Graph Expansion: Given a list of discovered entity names (from Hop-1 top chunks),
+    /// traverses SurrealDB's `mentions` and `relates_to` edges in reverse to retrieve chunks
+    /// that share or connect to these entities, sorted by the number of matching entities.
+    pub async fn fetch_graph_hop_chunks(
+        &self,
+        entity_names: &[String],
+        exclude_chunk_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<RetrievedChunk>> {
+        if entity_names.is_empty() || limit == 0 {
+            return Ok(vec![]);
+        }
+
+        // Convert entity names into deterministic SurrealDB entity record keys (`entity:<key>`)
+        let entity_keys: Vec<String> = entity_names
+            .iter()
+            .map(|n| sanitize_key(n))
+            .filter(|k| !k.is_empty())
+            .collect();
+
+        if entity_keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let sql = format!(
+            r#"
+            LET $target_names = {names_json};
+            SELECT
+                record::id(id) AS id,
+                doc_id,
+                doc_title,
+                chunk_index,
+                content,
+                0.0 AS rrf_score,
+                ->mentions->entity.{{name, entity_type, description}} AS entities,
+                ->mentions->entity->relates_to->entity.{{name, entity_type, description}} AS related_entities,
+                ->mentions->entity->relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_out,
+                ->mentions->entity<-relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_in
+            FROM chunk
+            WHERE ->mentions->entity.name ANYINSIDE $target_names
+               OR ->mentions->entity->relates_to->entity.name ANYINSIDE $target_names
+               OR ->mentions->entity<-relates_to<-entity.name ANYINSIDE $target_names
+            LIMIT 60;
+            "#,
+            names_json = serde_json::to_string(entity_names)?
+        );
+
+        let raw_responses = self.execute_sql(&sql).await?;
+        let items = extract_result_array(raw_responses.get(1));
+
+        let target_lower: std::collections::HashSet<String> =
+            entity_names.iter().map(|s| s.to_lowercase()).collect();
+        let excluded: std::collections::HashSet<&str> =
+            exclude_chunk_ids.iter().map(|s| s.as_str()).collect();
+
+        let mut scored_chunks: Vec<(usize, RetrievedChunk)> = Vec::new();
+        for val in items {
+            if let Ok(mut chunk) = serde_json::from_value::<RetrievedChunk>(val) {
+                if excluded.contains(chunk.id.as_str()) {
+                    continue;
+                }
+                finalize_chunk_relations(&mut chunk);
+
+                // Count how many distinct target entities this chunk mentions or relates to
+                let mut matched_entities = std::collections::HashSet::new();
+                for e in &chunk.entities {
+                    let low = e.name.to_lowercase();
+                    if target_lower.contains(&low) {
+                        matched_entities.insert(low);
+                    }
+                }
+                for rel in &chunk.relations {
+                    let f_low = rel.from.to_lowercase();
+                    let t_low = rel.to.to_lowercase();
+                    if target_lower.contains(&f_low) {
+                        matched_entities.insert(f_low);
+                    }
+                    if target_lower.contains(&t_low) {
+                        matched_entities.insert(t_low);
+                    }
+                }
+
+                let overlap_count = matched_entities.len().max(1);
+                chunk.rrf_score = (overlap_count as f64) * 0.015;
+                scored_chunks.push((overlap_count, chunk));
+            }
+        }
+
+        // Prioritize chunks that share the highest number of entities (e.g. Rust + SQL + Project Alpha)
+        scored_chunks.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let mut out: Vec<RetrievedChunk> = scored_chunks.into_iter().map(|(_, c)| c).collect();
+        out.truncate(limit);
+        Ok(out)
+    }
+
     /// Deletes all documents, chunks, graph entities and relations.
     pub async fn delete_all_data(&self) -> Result<()> {
         let sql = r#"
