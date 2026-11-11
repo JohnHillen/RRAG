@@ -52,6 +52,19 @@ pub struct ExtractedRelation {
     pub target: String,
 }
 
+fn get_ollama_num_ctx() -> u64 {
+    std::env::var("OLLAMA_NUM_CTX")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(16384)
+}
+
+fn should_disable_think() -> bool {
+    std::env::var("OLLAMA_THINK")
+        .map(|v| v == "false" || v == "0")
+        .unwrap_or(false)
+}
+
 impl LlmClient {
     pub fn new(http: Client, config: AppConfig) -> Self {
         let initial_cfg = LlmRuntimeConfig {
@@ -317,6 +330,17 @@ impl LlmClient {
                     rel_names.join(", ")
                 ));
             }
+            if !c.relations.is_empty() {
+                let rel_triplets: Vec<String> = c
+                    .relations
+                    .iter()
+                    .map(|r| format!("({} --[{}]--> {})", r.from, r.relation, r.to))
+                    .collect();
+                out.push_str(&format!(
+                    "  -> Knowledge Graph Relations: {}\n",
+                    rel_triplets.join(", ")
+                ));
+            }
             out.push('\n');
         }
         out
@@ -328,6 +352,8 @@ impl LlmClient {
         messages: &[ChatMessage],
         model_override: Option<&str>,
         temperature: Option<f32>,
+        num_ctx: Option<u64>,
+        think: Option<bool>,
     ) -> Result<String> {
         let cfg = self.get_runtime_config();
         let provider = cfg.llm_provider.to_lowercase();
@@ -351,12 +377,12 @@ impl LlmClient {
             }
             "anthropic" => self.call_anthropic(&cfg, messages, model, temp).await,
             "gemini_native" => self.call_gemini_native(&cfg, messages, model, temp).await,
-            "ollama" => self.call_ollama_native(&cfg, messages, model, temp).await,
+            "ollama" => self.call_ollama_native(&cfg, messages, model, temp, num_ctx, think).await,
             _ => {
                 // If an Ollama instance (:11434) is configured under openai_compatible,
                 // automatically use native /api/chat to reliably support `keep_alive: -1` and `think: false`
                 if cfg.llm_base_url.contains(":11434") {
-                    self.call_ollama_native(&cfg, messages, model, temp).await
+                    self.call_ollama_native(&cfg, messages, model, temp, num_ctx, think).await
                 } else {
                     self.call_openai_compatible(&cfg, messages, model, temp).await
                 }
@@ -370,6 +396,8 @@ impl LlmClient {
         messages: &[ChatMessage],
         model: &str,
         temperature: f32,
+        num_ctx: Option<u64>,
+        think: Option<bool>,
     ) -> Result<String> {
         let base = cfg
             .llm_base_url
@@ -377,6 +405,7 @@ impl LlmClient {
             .trim_end_matches("/v1");
         let url = format!("{}/api/chat", base);
 
+        let effective_num_ctx = num_ctx.unwrap_or_else(get_ollama_num_ctx);
         let mut payload = json!({
             "model": model,
             "messages": messages,
@@ -384,13 +413,12 @@ impl LlmClient {
             "keep_alive": -1,
             "options": {
                 "temperature": temperature,
-                "num_ctx": 4096
+                "num_ctx": effective_num_ctx
             }
         });
 
-        // Only set `think: false` on reasoning models (e.g. Qwen3/3.5, DeepSeek-R1, QwQ)
-        // to prevent HTTP 400 errors on classical models like qwen2.5:7b or llama3
-        if is_thinking_model(model) {
+        let disable_think = think.map(|t| !t).unwrap_or_else(should_disable_think);
+        if disable_think && is_thinking_model(model) {
             payload["think"] = json!(false);
         }
 
@@ -437,13 +465,21 @@ impl LlmClient {
             .trim()
             .to_string();
 
-        if content.is_empty() {
-            if let Some(thinking) = body["message"]["thinking"].as_str() {
-                return Ok(thinking.trim().to_string());
-            }
-        }
+        let thinking = body["message"]["thinking"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
 
-        Ok(strip_empty_think_tags(&content))
+        if !thinking.is_empty() && !content.is_empty() {
+            Ok(format!("<think>\n{}\n</think>\n\n{}", thinking, content))
+        } else if !content.is_empty() {
+            Ok(strip_empty_think_tags(&content))
+        } else if !thinking.is_empty() {
+            Ok(thinking)
+        } else {
+            Ok(String::new())
+        }
     }
 
     /// Streams completion tokens in real time (token by token) over a Tokio channel.
@@ -452,6 +488,8 @@ impl LlmClient {
         messages: Vec<ChatMessage>,
         model_override: Option<String>,
         temperature: Option<f32>,
+        num_ctx: Option<u64>,
+        think: Option<bool>,
     ) -> mpsc::Receiver<Result<String>> {
         let (tx, rx) = mpsc::channel(64);
         let client = self.clone();
@@ -470,7 +508,7 @@ impl LlmClient {
                 || (provider == "openai_compatible" && cfg.llm_base_url.contains(":11434"))
             {
                 if let Err(e) = client
-                    .stream_ollama_native(&cfg, &messages, &model, temp, &tx)
+                    .stream_ollama_native(&cfg, &messages, &model, temp, num_ctx, think, &tx)
                     .await
                 {
                     let _ = tx.send(Err(e)).await;
@@ -485,7 +523,7 @@ impl LlmClient {
             } else {
                 // Non-streaming fallback for providers without SSE parser (e.g. Anthropic, Gemini Native, None)
                 match client
-                    .chat_completion(&messages, Some(&model), Some(temp))
+                    .chat_completion(&messages, Some(&model), Some(temp), num_ctx, think)
                     .await
                 {
                     Ok(full) => {
@@ -507,6 +545,8 @@ impl LlmClient {
         messages: &[ChatMessage],
         model: &str,
         temperature: f32,
+        num_ctx: Option<u64>,
+        think: Option<bool>,
         tx: &mpsc::Sender<Result<String>>,
     ) -> Result<()> {
         let base = cfg
@@ -515,6 +555,7 @@ impl LlmClient {
             .trim_end_matches("/v1");
         let url = format!("{}/api/chat", base);
 
+        let effective_num_ctx = num_ctx.unwrap_or_else(get_ollama_num_ctx);
         let mut payload = json!({
             "model": model,
             "messages": messages,
@@ -522,11 +563,12 @@ impl LlmClient {
             "keep_alive": -1,
             "options": {
                 "temperature": temperature,
-                "num_ctx": 4096
+                "num_ctx": effective_num_ctx
             }
         });
 
-        if is_thinking_model(model) {
+        let disable_think = think.map(|t| !t).unwrap_or_else(should_disable_think);
+        if disable_think && is_thinking_model(model) {
             payload["think"] = json!(false);
         }
 
@@ -548,6 +590,7 @@ impl LlmClient {
 
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
+        let mut in_thinking = false;
 
         while let Some(chunk_res) = stream.next().await {
             let bytes = chunk_res?;
@@ -561,13 +604,41 @@ impl LlmClient {
                     continue;
                 }
                 if let Ok(val) = serde_json::from_str::<Value>(&line) {
+                    // Check thinking tokens first
+                    if let Some(think_tok) = val["message"]["thinking"].as_str() {
+                        if !think_tok.is_empty() {
+                            if !in_thinking {
+                                in_thinking = true;
+                                if tx.send(Ok("<think>\n".to_string())).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
+                            if tx.send(Ok(think_tok.to_string())).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    // Check content tokens
                     if let Some(tok) = val["message"]["content"].as_str() {
-                        if !tok.is_empty() && tx.send(Ok(tok.to_string())).await.is_err() {
-                            return Ok(());
+                        if !tok.is_empty() {
+                            if in_thinking {
+                                in_thinking = false;
+                                if tx.send(Ok("\n</think>\n\n".to_string())).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
+                            if tx.send(Ok(tok.to_string())).await.is_err() {
+                                return Ok(());
+                            }
                         }
                     }
                 }
             }
+        }
+
+        if in_thinking {
+            let _ = tx.send(Ok("\n</think>\n\n".to_string())).await;
         }
         Ok(())
     }
@@ -828,7 +899,7 @@ Text:
             },
         ];
 
-        if let Ok(raw) = self.chat_completion(&messages, None, Some(0.0)).await {
+        if let Ok(raw) = self.chat_completion(&messages, None, Some(0.0), None, None).await {
             let trimmed = if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}')) {
                 &raw[start..=end]
             } else {

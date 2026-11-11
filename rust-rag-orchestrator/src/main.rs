@@ -76,6 +76,10 @@ pub struct OpenAiChatRequest {
     pub top_n: Option<usize>,
     pub reranker: Option<String>,
     #[serde(default)]
+    pub num_ctx: Option<u64>,
+    #[serde(default)]
+    pub think: Option<bool>,
+    #[serde(default)]
     pub attachment: Option<ChatAttachment>,
     #[serde(default)]
     pub attachment_only: bool,
@@ -600,6 +604,9 @@ async fn prepare_ephemeral_attachment_chunks(
             rerank_score: Some(1.0),
             entities: vec![],
             related_entities: vec![],
+            relations_out: vec![],
+            relations_in: vec![],
+            relations: vec![],
         })
         .collect();
 
@@ -787,6 +794,8 @@ async fn openai_chat_handler(
             &augmented_messages,
             req.model.as_deref(),
             req.temperature,
+            req.num_ctx,
+            req.think,
         )
         .await
     {
@@ -913,7 +922,13 @@ async fn chat_stream_handler(
     let t_llm_start = std::time::Instant::now();
     let mut token_rx = state
         .llm
-        .chat_completion_stream(augmented_messages, req.model, req.temperature)
+        .chat_completion_stream(
+            augmented_messages,
+            req.model,
+            req.temperature,
+            req.num_ctx,
+            req.think,
+        )
         .await;
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(64);

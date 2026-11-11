@@ -21,10 +21,26 @@ pub struct RetrievedChunk {
     pub rrf_score: f64,
     #[serde(default)]
     pub rerank_score: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_graph_entities")]
     pub entities: Vec<GraphEntity>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_graph_entities")]
     pub related_entities: Vec<GraphEntity>,
+    #[serde(default, deserialize_with = "deserialize_graph_relations")]
+    pub relations_out: Vec<GraphRelation>,
+    #[serde(default, deserialize_with = "deserialize_graph_relations")]
+    pub relations_in: Vec<GraphRelation>,
+    #[serde(default)]
+    pub relations: Vec<GraphRelation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GraphRelation {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub relation: String,
+    #[serde(default)]
+    pub to: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +56,8 @@ pub struct DocumentSummary {
     pub doc_title: String,
     pub chunk_count: usize,
     pub created_at: String,
+    #[serde(default)]
+    pub relations: Vec<String>,
 }
 
 impl SurrealClient {
@@ -117,14 +135,65 @@ impl SurrealClient {
         Ok(false)
     }
 
-    /// Lists all documents stored in SurrealDB with chunk counts and timestamps.
+    /// Lists all documents stored in SurrealDB with chunk counts, timestamps, and graph relations.
     pub async fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
-        let sql = "SELECT doc_id, doc_title, count() AS chunk_count, time::max(created_at) AS created_at FROM chunk GROUP BY doc_id, doc_title;";
+        let sql = r#"
+            SELECT doc_id, doc_title, count() AS chunk_count, time::max(created_at) AS created_at FROM chunk GROUP BY doc_id, doc_title;
+            SELECT
+                doc_id,
+                ->mentions->entity->relates_to.{ from: in.name, relation: relation_type, to: out.name } AS relations_out,
+                ->mentions->entity<-relates_to.{ from: in.name, relation: relation_type, to: out.name } AS relations_in
+            FROM chunk;
+            SELECT record::id(id) AS doc_id, relations FROM document;
+        "#;
         let res = self.execute_sql(sql).await?;
-        let items = extract_result_array(res.first());
 
-        let mut docs = Vec::with_capacity(items.len());
-        for val in items {
+        // 1. Chunks metadata
+        let chunk_items = extract_result_array(res.first());
+
+        // 2. Relations aggregated per doc_id from chunk graph traversals (matching search_hybrid)
+        let mut doc_relations_map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+
+        for item in extract_result_array(res.get(1)) {
+            let did = item["doc_id"].as_str().unwrap_or_default().to_string();
+            if did.is_empty() {
+                continue;
+            }
+            let mut chunk_rels = Vec::new();
+            if let Some(r_out) = item.get("relations_out") {
+                flatten_relations(r_out, &mut chunk_rels);
+            }
+            if let Some(r_in) = item.get("relations_in") {
+                flatten_relations(r_in, &mut chunk_rels);
+            }
+
+            let entry = doc_relations_map.entry(did).or_default();
+            for r in chunk_rels {
+                if !r.from.is_empty() && !r.to.is_empty() {
+                    let formatted = format!("{} ──[{}]──► {}", r.from, r.relation, r.to);
+                    entry.insert(formatted);
+                }
+            }
+        }
+
+        // 3. Also merge any relations explicitly stored on document records
+        for d in extract_result_array(res.get(2)) {
+            let did = d["doc_id"].as_str().unwrap_or_default().to_string();
+            if let Some(arr) = d["relations"].as_array() {
+                let entry = doc_relations_map.entry(did).or_default();
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        if !s.is_empty() {
+                            entry.insert(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut docs = Vec::with_capacity(chunk_items.len());
+        for val in chunk_items {
             let doc_id = val["doc_id"].as_str().unwrap_or_default().to_string();
             let doc_title = val["doc_title"].as_str().unwrap_or("Untitled").to_string();
             let chunk_count = val["chunk_count"].as_u64().unwrap_or(0) as usize;
@@ -135,12 +204,21 @@ impl SurrealClient {
                 .take(19)
                 .collect::<String>()
                 .replace('T', " ");
+
             if !doc_id.is_empty() {
+                let mut relations: Vec<String> = doc_relations_map
+                    .remove(&doc_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                relations.sort();
+
                 docs.push(DocumentSummary {
                     doc_id,
                     doc_title,
                     chunk_count,
                     created_at,
+                    relations,
                 });
             }
         }
@@ -186,10 +264,16 @@ impl SurrealClient {
         entities: &[(String, String, Option<String>)],
         relations: &[(String, String, String)],
     ) -> Result<()> {
+        let rel_strings: Vec<String> = relations
+            .iter()
+            .map(|(s, r, d)| format!("{} ──[{}]──► {}", s, r, d))
+            .collect();
+
         // 1. Parent document record via UPSERT
         let doc_json = json!({
             "title": title,
             "source": source,
+            "relations": rel_strings,
         });
         let doc_stmt = format!(
             "UPSERT type::record('document', {}) CONTENT {};\n",
@@ -244,9 +328,8 @@ impl SurrealClient {
                         matched_any = true;
                         let chunk_key = format!("{}_{}", doc_id, idx);
                         graph_sql.push_str(&format!(
-                            "RELATE type::record('chunk', {})->mentions->type::record('entity', {});\n",
-                            serde_json::to_string(&chunk_key)?,
-                            serde_json::to_string(&clean_key)?
+                            "RELATE chunk:{}->mentions->entity:{};\n",
+                            chunk_key, clean_key
                         ));
                     }
                 }
@@ -254,9 +337,8 @@ impl SurrealClient {
                 if !matched_any && !chunks.is_empty() {
                     let first_chunk_key = format!("{}_0", doc_id);
                     graph_sql.push_str(&format!(
-                        "RELATE type::record('chunk', {})->mentions->type::record('entity', {});\n",
-                        serde_json::to_string(&first_chunk_key)?,
-                        serde_json::to_string(&clean_key)?
+                        "RELATE chunk:{}->mentions->entity:{};\n",
+                        first_chunk_key, clean_key
                     ));
                 }
             }
@@ -268,9 +350,9 @@ impl SurrealClient {
                     continue;
                 }
                 graph_sql.push_str(&format!(
-                    "RELATE type::record('entity', {})->relates_to->type::record('entity', {}) SET relation_type = {};\n",
-                    serde_json::to_string(&src_key)?,
-                    serde_json::to_string(&dst_key)?,
+                    "RELATE entity:{}->relates_to->entity:{} SET relation_type = {};\n",
+                    src_key,
+                    dst_key,
                     serde_json::to_string(rel_type)?
                 ));
             }
@@ -307,7 +389,9 @@ impl SurrealClient {
                 content,
                 vector::distance::knn() AS dist,
                 ->mentions->entity.{{name, entity_type, description}} AS entities,
-                ->mentions->entity->relates_to->entity.{{name, entity_type, description}} AS related_entities
+                ->mentions->entity->relates_to->entity.{{name, entity_type, description}} AS related_entities,
+                ->mentions->entity->relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_out,
+                ->mentions->entity<-relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_in
             FROM chunk
             WHERE embedding <|{k}, 100|> $q_vec
             ORDER BY dist ASC;
@@ -321,7 +405,9 @@ impl SurrealClient {
                 content,
                 search::score(1) AS bm25_score,
                 ->mentions->entity.{{name, entity_type, description}} AS entities,
-                ->mentions->entity->relates_to->entity.{{name, entity_type, description}} AS related_entities
+                ->mentions->entity->relates_to->entity.{{name, entity_type, description}} AS related_entities,
+                ->mentions->entity->relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_out,
+                ->mentions->entity<-relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_in
             FROM chunk
             WHERE content @1@ $q_txt
             ORDER BY bm25_score DESC
@@ -345,6 +431,7 @@ impl SurrealClient {
 
         for (rank, val) in vec_items.into_iter().enumerate() {
             if let Ok(mut chunk) = serde_json::from_value::<RetrievedChunk>(val) {
+                finalize_chunk_relations(&mut chunk);
                 let score = 1.0 / (rrf_k + (rank as f64) + 1.0);
                 chunk.rrf_score = score;
                 fused_map.insert(chunk.id.clone(), chunk);
@@ -352,16 +439,20 @@ impl SurrealClient {
         }
 
         for (rank, val) in bm25_items.into_iter().enumerate() {
-            if let Ok(chunk) = serde_json::from_value::<RetrievedChunk>(val) {
+            if let Ok(mut chunk) = serde_json::from_value::<RetrievedChunk>(val) {
+                finalize_chunk_relations(&mut chunk);
                 let score = 1.0 / (rrf_k + (rank as f64) + 1.0);
                 fused_map
                     .entry(chunk.id.clone())
-                    .and_modify(|existing| existing.rrf_score += score)
-                    .or_insert_with(|| {
-                        let mut c = chunk;
-                        c.rrf_score = score;
-                        c
-                    });
+                    .and_modify(|existing| {
+                        existing.rrf_score += score;
+                        for rel in chunk.relations.clone() {
+                            if !existing.relations.contains(&rel) {
+                                existing.relations.push(rel);
+                            }
+                        }
+                    })
+                    .or_insert(chunk);
             }
         }
 
@@ -425,13 +516,146 @@ fn extract_result_array(statement_res: Option<&Value>) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn finalize_chunk_relations(chunk: &mut RetrievedChunk) {
+    chunk.relations.extend(chunk.relations_out.clone());
+    chunk.relations.extend(chunk.relations_in.clone());
+    let mut seen = std::collections::HashSet::new();
+    chunk.relations.retain(|r| {
+        !r.from.is_empty()
+            && !r.to.is_empty()
+            && seen.insert(format!(
+                "{}:{}:{}",
+                r.from.to_lowercase(),
+                r.relation.to_lowercase(),
+                r.to.to_lowercase()
+            ))
+    });
+}
+
+fn deserialize_graph_entities<'de, D>(deserializer: D) -> std::result::Result<Vec<GraphEntity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<Value> = serde::Deserialize::deserialize(deserializer)?;
+    let mut results = Vec::new();
+    if let Some(val) = opt {
+        flatten_entities(&val, &mut results);
+    }
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|e| !e.name.is_empty() && seen.insert(e.name.to_lowercase()));
+    Ok(results)
+}
+
+fn flatten_entities(val: &Value, out: &mut Vec<GraphEntity>) {
+    match val {
+        Value::Array(arr) => {
+            for item in arr {
+                flatten_entities(item, out);
+            }
+        }
+        Value::Object(obj) => {
+            let name = obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let entity_type = obj
+                .get("entity_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Entity")
+                .trim()
+                .to_string();
+            let description = obj
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if !name.is_empty() {
+                out.push(GraphEntity {
+                    name,
+                    entity_type,
+                    description,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn deserialize_graph_relations<'de, D>(deserializer: D) -> std::result::Result<Vec<GraphRelation>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<Value> = serde::Deserialize::deserialize(deserializer)?;
+    let mut results = Vec::new();
+    if let Some(val) = opt {
+        flatten_relations(&val, &mut results);
+    }
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|r| {
+        !r.from.is_empty()
+            && !r.to.is_empty()
+            && seen.insert(format!(
+                "{}:{}:{}",
+                r.from.to_lowercase(),
+                r.relation.to_lowercase(),
+                r.to.to_lowercase()
+            ))
+    });
+    Ok(results)
+}
+
+fn flatten_relations(val: &Value, out: &mut Vec<GraphRelation>) {
+    match val {
+        Value::Array(arr) => {
+            for item in arr {
+                flatten_relations(item, out);
+            }
+        }
+        Value::Object(obj) => {
+            let from = obj
+                .get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let relation = obj
+                .get("relation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("related_to")
+                .trim()
+                .to_string();
+            let to = obj
+                .get("to")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !from.is_empty() && !to.is_empty() {
+                out.push(GraphRelation { from, relation, to });
+            }
+        }
+        _ => {}
+    }
+}
+
 fn sanitize_key(input: &str) -> String {
-    input
+    let sanitized: String = input
         .trim()
         .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect()
+        .collect();
+    if sanitized.is_empty() {
+        return sanitized;
+    }
+    // SurrealQL record identifiers must start with an alphabetic character
+    if sanitized.chars().next().map_or(false, |c| !c.is_ascii_alphabetic()) {
+        format!("e_{}", sanitized)
+    } else {
+        sanitized
+    }
 }
 
 /// Expands hyphenated model identifiers (e.g. "TR-1" -> "TR-1 TR1", "E-Stream" -> "E-Stream EStream")
