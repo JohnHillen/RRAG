@@ -1,0 +1,83 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1158 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Mitarbeiterprofil: Thomas Schmidt) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Stammdaten & Position) Tj
+/F2 10 Tf
+0 -18 Td
+(Name: Thomas Schmidt) Tj
+0 -14 Td
+(Personalnummer: EMP-1042) Tj
+0 -14 Td
+(Position: Senior Systems & Cloud Engineer) Tj
+0 -14 Td
+(Abteilung: Core Platform Engineering) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Technische Kernkompetenzen \(Skills\)) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Programmiersprachen: Rust \(Experte, 6 Jahre\), SQL \(Experte, PostgreSQL, SurrealDB\)) Tj
+0 -14 Td
+(  * Cloud & Infrastruktur: Kubernetes, Docker, Terraform, Kafka) Tj
+0 -14 Td
+(  * Spezialgebiete: Distributed Systems, High-Performance Microservices, Real-Time Ingestion) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Sprachkenntnisse) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Deutsch: Muttersprache \(C2\)) Tj
+0 -14 Td
+(  * Englisch: Verhandlungssicher \(C1 Level - zertifiziert durch Cambridge Advanced\)) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Projekt-Historie & Zuordnung) Tj
+/F2 10 Tf
+0 -18 Td
+(Aktuell voll zugewiesen zu: Projekt Alpha \(Lead Backend Architekt\)) Tj
+0 -14 Td
+(Schwerpunkt: Aufbau der fehlertoleranten Cloud-Infrastruktur und Vektordatenbank-Cluster.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001219 00000 n 
+0000001294 00000 n 
+0000001364 00000 n 
+0000001500 00000 n 
+0000001557 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1606
+%%EOF

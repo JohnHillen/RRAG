@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1078 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Rahmenvertrag & Service Level Agreement: BMW AG) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Vertragspartner & Geltungsbereich) Tj
+/F2 10 Tf
+0 -18 Td
+(Auftraggeber: BMW AG, Petuelring 130, 80788 Muenchen) Tj
+0 -14 Td
+(Vertragsnummer: BMW-SLA-2026-088) Tj
+0 -14 Td
+(Gegenstand: Qualitaetsanforderungen fuer Cloud- und Plattform-Projekte) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Personelle Qualifikations-Anforderungen \(Mandatory Requirements\)) Tj
+/F2 10 Tf
+0 -18 Td
+(Fuer alle eingesetzten Projektmitarbeiter in Tier-1 Infrastrukturprojekten gilt:) Tj
+0 -14 Td
+(  * Sprachqualifikation: Englisch minimum Niveau B2 \(nach GER / CEFR Standard\)) Tj
+0 -14 Td
+(  * Technische Kernskills: Nachgewiesene Erfahrung in Rust und SQL Datenbankdesign) Tj
+0 -14 Td
+(  * Sicherheitszertifizierung: BSI IT-Grundschutz oder ISO/IEC 27001 Konformitaet) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Zugeordnete Kundenprojekte) Tj
+/F2 10 Tf
+0 -18 Td
+(Aktuell autorisierte Projekte unter diesem Rahmenvertrag:) Tj
+0 -14 Td
+(  * Projekt Alpha \(Cloud Migration & Connected Fleet Platform\)) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001139 00000 n 
+0000001214 00000 n 
+0000001284 00000 n 
+0000001420 00000 n 
+0000001477 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1526
+%%EOF

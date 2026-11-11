@@ -1,0 +1,83 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1109 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Mitarbeiterprofil: Michael Kurz) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Stammdaten & Position) Tj
+/F2 10 Tf
+0 -18 Td
+(Name: Michael Kurz) Tj
+0 -14 Td
+(Personalnummer: EMP-1105) Tj
+0 -14 Td
+(Position: Senior Data & Database Architect) Tj
+0 -14 Td
+(Abteilung: Data Science & Analytics) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Technische Kernkompetenzen \(Skills\)) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Datenbanken & Abfragesprachen: SQL \(Senior Master, komplexe Analytical Queries, Tuning\)) Tj
+0 -14 Td
+(  * Programmiersprachen: Python, Java, Go, Bash \(Kein Rust\)) Tj
+0 -14 Td
+(  * Daten-Plattformen: Snowflake, PostgreSQL, SurrealDB, BigQuery, dbt) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Sprachkenntnisse) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Deutsch: Muttersprache \(C2\)) Tj
+0 -14 Td
+(  * Englisch: Fliessend in Wort und Schrift \(B2 Level - TOEFL iBT 95\)) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Projekt-Historie & Zuordnung) Tj
+/F2 10 Tf
+0 -18 Td
+(Aktuell zugewiesen zu: Projekt Alpha \(Data Layer\) sowie beratend in Projekt Titan) Tj
+0 -14 Td
+(Zuständig für semantische Datenmodelle und relationale Schemata.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001170 00000 n 
+0000001245 00000 n 
+0000001315 00000 n 
+0000001451 00000 n 
+0000001508 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1557
+%%EOF

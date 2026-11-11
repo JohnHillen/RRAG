@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Length 982 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Projektdokumentation: Projekt Alpha) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Projekt-Stammdaten) Tj
+/F2 10 Tf
+0 -18 Td
+(Projektname: Projekt Alpha) Tj
+0 -14 Td
+(Projekt-Code: PRJ-ALPHA-CLOUD) Tj
+0 -14 Td
+(Auftraggeber / Kunde: BMW AG \(Rahmenvertrag BMW-SLA-2026-088\)) Tj
+0 -14 Td
+(Status: Aktiv / Phase 2 Rollout) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Projekt-Scope & Architektur) Tj
+/F2 10 Tf
+0 -18 Td
+(Projekt Alpha ist das strategische Plattformprojekt zur Migration von Flotten- und Telemetriedaten) Tj
+0 -14 Td
+(in eine hochverfuegbare, echtzeitfaehige Hybrid-Cloud-Umgebung.) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Erforderliche Rollen & Team-Besetzung) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Lead Systems Architect \(Besetzt durch: Thomas Schmidt - Rust & Cloud Experte\)) Tj
+0 -14 Td
+(  * Senior Database Engineer \(Besetzt durch: Michael Kurz - SQL & Data Governance\)) Tj
+0 -14 Td
+(  * Alle Teammitglieder erfuellen die Kundenanforderung Englisch B2 oder hoeher.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001042 00000 n 
+0000001117 00000 n 
+0000001187 00000 n 
+0000001323 00000 n 
+0000001380 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1429
+%%EOF

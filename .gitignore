@@ -12,8 +12,12 @@ logs/
 .pids/
 *.log
 
-# Documents / PDFs
+# Documents / PDFs (keep showcase_documents in Git)
 *.pdf
+!showcase_documents/**/*.pdf
+
+# IDE settings
+.vscode/
 
 
 # Database exports / dumps (keep sql/init.surql)

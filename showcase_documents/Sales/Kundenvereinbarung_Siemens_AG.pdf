@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1047 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Rahmenvertrag: Siemens AG Digital Industries) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Vertragspartner & Geltungsbereich) Tj
+/F2 10 Tf
+0 -18 Td
+(Auftraggeber: Siemens AG Digital Industries, Werner-von-Siemens-Strasse 1, Muenchen) Tj
+0 -14 Td
+(Vertragsnummer: SIE-DI-2025-412) Tj
+0 -14 Td
+(Gegenstand: Industrielle Telemetrie- und Edge-Datenverarbeitung) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Personelle Qualifikations-Anforderungen) Tj
+/F2 10 Tf
+0 -18 Td
+(Fuer Teammitglieder in industriellen Analyseprojekten:) Tj
+0 -14 Td
+(  * Sprachqualifikation: Englisch mindestens B1 fuer interne technische Abstimmungen) Tj
+0 -14 Td
+(  * Technische Kernskills: Fundierte Kenntnisse in Datenanalyse und Datenbank-Architektur \(SQL\)) Tj
+0 -14 Td
+(  * Rust-Kenntnisse sind ausdruecklich erwuenscht fuer High-Performance Komponenten) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Zugeordnete Kundenprojekte) Tj
+/F2 10 Tf
+0 -18 Td
+(Unter diesem Vertrag gefuehrte Initiativen:) Tj
+0 -14 Td
+(  * Projekt Titan \(Edge Telemetrie Ingestion & Analytics\)) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001108 00000 n 
+0000001183 00000 n 
+0000001253 00000 n 
+0000001389 00000 n 
+0000001446 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1495
+%%EOF

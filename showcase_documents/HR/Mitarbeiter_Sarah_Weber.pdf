@@ -1,0 +1,83 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1086 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Mitarbeiterprofil: Sarah Weber) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Stammdaten & Position) Tj
+/F2 10 Tf
+0 -18 Td
+(Name: Sarah Weber) Tj
+0 -14 Td
+(Personalnummer: EMP-1088) Tj
+0 -14 Td
+(Position: Systems Developer) Tj
+0 -14 Td
+(Abteilung: Embedded & Performance Systems) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Technische Kernkompetenzen \(Skills\)) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Programmiersprachen: Rust \(Fortgeschritten, 3 Jahre\), C++, Python) Tj
+0 -14 Td
+(  * Datenbanken: Redis, SQLite, MongoDB \(NoSQL\)) Tj
+0 -14 Td
+(  * Spezialgebiete: Low-Latency IPC, Hardware-nahe Softwareentwicklung, Memory Safety) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Sprachkenntnisse) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Deutsch: Muttersprache \(C2\)) Tj
+0 -14 Td
+(  * Englisch: Gute Grundkenntnisse \(B1 Level - interne technische Kommunikation\)) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Projekt-Historie & Zuordnung) Tj
+/F2 10 Tf
+0 -18 Td
+(Aktuell zugewiesen zu: Projekt Titan \(High-Throughput Analytics Pipeline\)) Tj
+0 -14 Td
+(Fokus: Entwicklung von nativen Rust-Konnektoren für Telemetriedaten.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001147 00000 n 
+0000001222 00000 n 
+0000001292 00000 n 
+0000001428 00000 n 
+0000001485 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1534
+%%EOF

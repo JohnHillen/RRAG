@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Length 992 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Projektdokumentation: Projekt Titan) Tj
+/F2 10 Tf
+0 -30 Td
+/F1 14 Tf
+(Projekt-Stammdaten) Tj
+/F2 10 Tf
+0 -18 Td
+(Projektname: Projekt Titan) Tj
+0 -14 Td
+(Projekt-Code: PRJ-TITAN-IOT) Tj
+0 -14 Td
+(Auftraggeber / Kunde: Siemens AG \(Vertrag SIE-DI-2025-412\)) Tj
+0 -14 Td
+(Status: Entwicklungsphase \(Q1 2026\)) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Projekt-Scope & Technologie-Stack) Tj
+/F2 10 Tf
+0 -18 Td
+(Projekt Titan implementiert eine extrem schnelle Ingestion-Pipeline fuer Sensordaten von Fertigungsstrassen.) Tj
+0 -14 Td
+(Der Core-Ingestion-Daemon wird in Rust geschrieben, um Latenzen unter 2 Millisekunden zu garantieren.) Tj
+0 -14 Td
+0 -15 Td
+/F1 14 Tf
+(Zugewiesene Mitarbeiter) Tj
+/F2 10 Tf
+0 -18 Td
+(  * Core Rust Developer: Sarah Weber \(Embedded Systems, Rust, NoSQL\)) Tj
+0 -14 Td
+(  * Advisory Data Architect: Michael Kurz \(SQL Analytics & Schema Validation\)) Tj
+0 -14 Td
+(  * Projekt-Sprache: Deutsch und Englisch \(Level B1 ausreichend\).) Tj
+0 -14 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001052 00000 n 
+0000001127 00000 n 
+0000001197 00000 n 
+0000001333 00000 n 
+0000001390 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1439
+%%EOF
