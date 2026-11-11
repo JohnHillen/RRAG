@@ -106,6 +106,39 @@ const STORAGE_KEY_TOP_N: &str = "rust_rag_top_n_v1";
 const STORAGE_KEY_USE_RAG: &str = "rust_rag_use_rag_v1";
 const STORAGE_KEY_NUM_CTX: &str = "rust_rag_num_ctx_v1";
 const STORAGE_KEY_THINK: &str = "rust_rag_think_mode_v1";
+const STORAGE_KEY_LLM_MODEL: &str = "rust_rag_llm_model_v1";
+const STORAGE_KEY_LLM_PROVIDER: &str = "rust_rag_llm_provider_v1";
+const STORAGE_KEY_LLM_URL: &str = "rust_rag_llm_url_v1";
+
+fn load_llm_pref_from_storage() -> Option<(String, String, String)> {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let model = storage.get_item(STORAGE_KEY_LLM_MODEL).ok().flatten();
+            let prov = storage.get_item(STORAGE_KEY_LLM_PROVIDER).ok().flatten();
+            let url = storage.get_item(STORAGE_KEY_LLM_URL).ok().flatten();
+            if let Some(m) = model {
+                if !m.trim().is_empty() {
+                    return Some((
+                        prov.unwrap_or_else(|| "openai_compatible".to_string()),
+                        url.unwrap_or_else(|| "http://host.docker.internal:11434/v1".to_string()),
+                        m.trim().to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn save_llm_pref_to_storage(provider: &str, base_url: &str, model: &str) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_LLM_PROVIDER, provider);
+            let _ = storage.set_item(STORAGE_KEY_LLM_URL, base_url);
+            let _ = storage.set_item(STORAGE_KEY_LLM_MODEL, model);
+        }
+    }
+}
 const WELCOME_TEXT_DE: &str = "Willkommen im Rust RAG & GraphRAG Studio! Unten links in der Seitenleiste findest du die Icons für Datei-Upload (➕), Dokumenten-Verwaltung (🗂️) und die Einstellungen (⚙️) für RAG, Reranker und Sprachmodelle.";
 const WELCOME_TEXT_EN: &str = "Welcome to Rust RAG & GraphRAG Studio! At the bottom left of the sidebar you'll find quick icons for File Upload (➕), Document Management (🗂️), and Settings (⚙️) for RAG, Rerankers, and LLMs.";
 
@@ -344,7 +377,7 @@ fn generate_chat_markdown(
     top_n: usize,
     num_ctx: u64,
     think_mode: bool,
-    messages: &[UiChatMessage],
+    messages: &[StoredChatMessage],
 ) -> String {
     let now = js_sys::Date::new_0();
     let iso = now.to_iso_string().as_string().unwrap_or_default();
@@ -364,21 +397,21 @@ fn generate_chat_markdown(
     out.push_str("---\n\n");
 
     for msg in messages {
-        let content = msg.content.get_untracked();
+        let content = &msg.content;
         let is_user = msg.role == "user";
         if is_user {
             out.push_str("## 👤 User\n\n");
         } else {
             out.push_str(&format!("## 🤖 Assistant ({})\n\n", model));
         }
-        out.push_str(&content);
+        out.push_str(content);
         out.push_str("\n\n");
 
-        if let Some(metrics) = msg.metrics_info.get_untracked() {
+        if let Some(ref metrics) = msg.metrics_info {
             out.push_str(&format!("> ⚡ *Performance & Retrieval*: {}\n\n", metrics));
         }
 
-        let srcs = msg.sources.get_untracked();
+        let srcs = &msg.sources;
         if !srcs.is_empty() {
             let total_rels: usize = srcs.iter().map(|s| s.relations.len()).sum();
             out.push_str(&format!(
@@ -433,7 +466,7 @@ fn generate_chat_markdown(
     out
 }
 
-fn export_active_chat(
+fn export_chat_session_markdown(
     title: &str,
     model: &str,
     use_rag: bool,
@@ -441,7 +474,7 @@ fn export_active_chat(
     top_n: usize,
     num_ctx: u64,
     think_mode: bool,
-    messages: &[UiChatMessage],
+    messages: &[StoredChatMessage],
 ) {
     let md = generate_chat_markdown(title, model, use_rag, reranker_mode, top_n, num_ctx, think_mode, messages);
 
@@ -956,18 +989,21 @@ fn App() -> impl IntoView {
         });
     };
 
-    // Health-/System-Info & aktive LLM-Konfiguration vom Backend laden
+    let saved_llm_pref = load_llm_pref_from_storage();
+    let initial_llm_model = saved_llm_pref.as_ref().map(|p| p.2.clone()).unwrap_or_else(|| "qwen2.5:7b".to_string());
+    let initial_llm_prov = saved_llm_pref.as_ref().map(|p| p.0.clone()).unwrap_or_else(|| "openai_compatible".to_string());
+    let initial_llm_url = saved_llm_pref.as_ref().map(|p| p.1.clone()).unwrap_or_else(|| "http://host.docker.internal:11434/v1".to_string());
+
     let (backend_info, set_backend_info) = create_signal("Verbinde...".to_string());
     let (show_llm_modal, set_show_llm_modal) = create_signal(false);
-    let (llm_provider_sig, set_llm_provider_sig) = create_signal("openai_compatible".to_string());
-    let (llm_base_url_sig, set_llm_base_url_sig) =
-        create_signal("http://host.docker.internal:11434/v1".to_string());
+    let (llm_provider_sig, set_llm_provider_sig) = create_signal(initial_llm_prov);
+    let (llm_base_url_sig, set_llm_base_url_sig) = create_signal(initial_llm_url);
     let (llm_api_key_sig, set_llm_api_key_sig) = create_signal(String::new());
     let (show_api_key, set_show_api_key) = create_signal(false);
     let (llm_has_saved_key, set_llm_has_saved_key) = create_signal(false);
-    let (llm_model_sig, set_llm_model_sig) = create_signal("qwen2.5:7b".to_string());
+    let (llm_model_sig, set_llm_model_sig) = create_signal(initial_llm_model.clone());
     let (available_models, set_available_models) =
-        create_signal(vec!["qwen2.5:7b".to_string()]);
+        create_signal(vec![initial_llm_model]);
     let (llm_config_status, set_llm_config_status) = create_signal(String::new());
     let (is_discovering_models, set_is_discovering_models) = create_signal(false);
 
@@ -995,12 +1031,37 @@ fn App() -> impl IntoView {
                         models.insert(0, model.clone());
                     }
 
-                    set_llm_provider_sig.set(provider.clone());
-                    set_llm_base_url_sig.set(base_url);
-                    set_llm_model_sig.set(model.clone());
+                    // Check if local storage has a preference that differs from server default (e.g. after container recreate)
+                    let current_storage_model = load_llm_pref_from_storage();
+                    let (eff_prov, eff_url, eff_mod) = match current_storage_model {
+                        Some((p, u, m)) if m != model => {
+                            // Automatically sync back to server so the server uses the user's preferred model
+                            let payload = serde_json::json!({
+                                "llm_provider": p,
+                                "llm_base_url": u,
+                                "llm_model": m
+                            });
+                            let _ = Request::post("/v1/llm/config")
+                                .header("Content-Type", "application/json")
+                                .body(payload.to_string())
+                                .unwrap()
+                                .send()
+                                .await;
+                            (p, u, m)
+                        }
+                        _ => (provider, base_url, model),
+                    };
+
+                    if !models.contains(&eff_mod) {
+                        models.insert(0, eff_mod.clone());
+                    }
+
+                    set_llm_provider_sig.set(eff_prov.clone());
+                    set_llm_base_url_sig.set(eff_url);
+                    set_llm_model_sig.set(eff_mod.clone());
                     set_llm_has_saved_key.set(has_key);
                     set_available_models.set(models);
-                    set_backend_info.set(format!("LLM: {} ({})", model, provider));
+                    set_backend_info.set(format!("LLM: {} ({})", eff_mod, eff_prov));
                 }
             }
         });
@@ -1748,8 +1809,49 @@ fn App() -> impl IntoView {
         set_chat_sessions.set(sessions);
     };
 
+    // --- State & Handler für das 3-Punkte-Menü (⋯) und Umbenennen in der Sidebar ---
+    let (open_chat_menu_id, set_open_chat_menu_id) = create_signal::<Option<usize>>(None);
+    let (editing_chat_id, set_editing_chat_id) = create_signal::<Option<usize>>(None);
+    let (editing_chat_title, set_editing_chat_title) = create_signal(String::new());
+
+    let save_renamed_chat = move |target_id: usize| {
+        let new_title = editing_chat_title.get().trim().to_string();
+        if !new_title.is_empty() {
+            set_chat_sessions.update(|sessions| {
+                if let Some(sess) = sessions.iter_mut().find(|s| s.id == target_id) {
+                    sess.title = new_title;
+                }
+                save_sessions_to_storage(sessions);
+            });
+        }
+        set_editing_chat_id.set(None);
+    };
+
+    let export_session_by_id = move |target_id: usize| {
+        if active_session_id.get_untracked() == target_id {
+            persist_current_chat(None);
+        }
+        let sessions = chat_sessions.get_untracked();
+        if let Some(sess) = sessions.into_iter().find(|s| s.id == target_id) {
+            let model = llm_model_sig.get_untracked();
+            let rag = use_rag.get_untracked();
+            let r_mode = reranker_mode.get_untracked();
+            let tn = top_n.get_untracked();
+            let ctx = num_ctx_sig.get_untracked();
+            let think = think_mode_sig.get_untracked();
+            export_chat_session_markdown(&sess.title, &model, rag, &r_mode, tn, ctx, think, &sess.messages);
+        }
+    };
+
     view! {
-        <div class="app-layout">
+        <div
+            class="app-layout"
+            on:click=move |_| {
+                if open_chat_menu_id.get().is_some() {
+                    set_open_chat_menu_id.set(None);
+                }
+            }
+        >
             // --- Linke Navigation / Sidebar ---
             <aside class="sidebar">
                 <div class="sidebar-top">
@@ -1823,6 +1925,7 @@ fn App() -> impl IntoView {
                                 children=move |sess| {
                                     let sid = sess.id;
                                     let title = sess.title.clone();
+                                    let title_for_rename = title.clone();
                                     let user_turns = sess.messages.iter().filter(|m| m.role == "user").count();
                                     view! {
                                         <div
@@ -1831,13 +1934,66 @@ fn App() -> impl IntoView {
                                             } else {
                                                 "chat-session-item"
                                             }
-                                            on:click=move |_| switch_to_chat(sid)
+                                            on:click=move |_| {
+                                                if editing_chat_id.get() != Some(sid) {
+                                                    set_open_chat_menu_id.set(None);
+                                                    switch_to_chat(sid);
+                                                }
+                                            }
                                         >
                                             <span style="font-size: 0.85rem;">"💭"</span>
-                                            <span class="chat-session-title" title=title.clone()>
-                                                {title}
-                                            </span>
-                                            {if user_turns > 0 {
+                                            {move || if editing_chat_id.get() == Some(sid) {
+                                                view! {
+                                                    <div
+                                                        class="chat-session-rename-row"
+                                                        on:click=move |ev| ev.stop_propagation()
+                                                    >
+                                                        <input
+                                                            type="text"
+                                                            class="chat-session-rename-input"
+                                                            prop:value=move || editing_chat_title.get()
+                                                            on:input=move |ev| set_editing_chat_title.set(event_target_value(&ev))
+                                                            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                                                if ev.key() == "Enter" {
+                                                                    ev.prevent_default();
+                                                                    save_renamed_chat(sid);
+                                                                } else if ev.key() == "Escape" {
+                                                                    ev.prevent_default();
+                                                                    set_editing_chat_id.set(None);
+                                                                }
+                                                            }
+                                                        />
+                                                        <button
+                                                            class="chat-session-rename-btn"
+                                                            title=move || if is_en() { "Save title" } else { "Titel speichern" }
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                save_renamed_chat(sid);
+                                                            }
+                                                        >
+                                                            "✓"
+                                                        </button>
+                                                        <button
+                                                            class="chat-session-rename-btn"
+                                                            title=move || if is_en() { "Cancel" } else { "Abbrechen" }
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                set_editing_chat_id.set(None);
+                                                            }
+                                                        >
+                                                            "✕"
+                                                        </button>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                let t = title.clone();
+                                                view! {
+                                                    <span class="chat-session-title" title=t.clone()>
+                                                        {t}
+                                                    </span>
+                                                }.into_view()
+                                            }}
+                                            {move || if editing_chat_id.get() != Some(sid) && user_turns > 0 {
                                                 view! {
                                                     <span style="font-size: 0.68rem; color: #94a3b8; background: rgba(15,23,42,0.7); padding: 0.1rem 0.35rem; border-radius: 0.3rem;">
                                                         {user_turns}
@@ -1846,16 +2002,73 @@ fn App() -> impl IntoView {
                                             } else {
                                                 view! { <span></span> }.into_view()
                                             }}
-                                            <button
-                                                class="chat-session-delete"
-                                                title=move || if is_en() { "Delete this chat" } else { "Diesen Chat löschen" }
-                                                on:click=move |ev| {
-                                                    ev.stop_propagation();
-                                                    delete_chat_session(sid);
-                                                }
-                                            >
-                                                "✕"
-                                            </button>
+                                            {move || if editing_chat_id.get() != Some(sid) {
+                                                let t_rename = title_for_rename.clone();
+                                                view! {
+                                                    <div style="display:flex; align-items:center; gap:0.1rem;">
+                                                        <button
+                                                            class="chat-session-menu-btn"
+                                                            title=move || if is_en() { "More options (Rename / Export)" } else { "Optionen (Umbenennen / Export)" }
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                if open_chat_menu_id.get() == Some(sid) {
+                                                                    set_open_chat_menu_id.set(None);
+                                                                } else {
+                                                                    set_open_chat_menu_id.set(Some(sid));
+                                                                }
+                                                            }
+                                                        >
+                                                            "⋮"
+                                                        </button>
+                                                        <button
+                                                            class="chat-session-delete"
+                                                            title=move || if is_en() { "Delete this chat" } else { "Diesen Chat löschen" }
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                set_open_chat_menu_id.set(None);
+                                                                delete_chat_session(sid);
+                                                            }
+                                                        >
+                                                            "✕"
+                                                        </button>
+                                                    </div>
+                                                    {move || (open_chat_menu_id.get() == Some(sid)).then(|| {
+                                                        let t_r = t_rename.clone();
+                                                        view! {
+                                                            <div
+                                                                class="chat-session-dropdown"
+                                                                on:click=move |ev| ev.stop_propagation()
+                                                            >
+                                                                <button
+                                                                    class="chat-session-dropdown-item"
+                                                                    on:click=move |ev| {
+                                                                        ev.stop_propagation();
+                                                                        set_open_chat_menu_id.set(None);
+                                                                        set_editing_chat_title.set(t_r.clone());
+                                                                        set_editing_chat_id.set(Some(sid));
+                                                                    }
+                                                                >
+                                                                    <span>"✏️"</span>
+                                                                    <span>{move || if is_en() { "Rename" } else { "Umbenennen" }}</span>
+                                                                </button>
+                                                                <button
+                                                                    class="chat-session-dropdown-item"
+                                                                    on:click=move |ev| {
+                                                                        ev.stop_propagation();
+                                                                        set_open_chat_menu_id.set(None);
+                                                                        export_session_by_id(sid);
+                                                                    }
+                                                                >
+                                                                    <span>"📥"</span>
+                                                                    <span>{move || if is_en() { "Export (.md)" } else { "Export (.md)" }}</span>
+                                                                </button>
+                                                            </div>
+                                                        }
+                                                    })}
+                                                }.into_view()
+                                            } else {
+                                                view! { <span></span> }.into_view()
+                                            }}
                                         </div>
                                     }
                                 }
@@ -1933,32 +2146,6 @@ fn App() -> impl IntoView {
                     </div>
 
                     <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
-                        <button
-                            class="btn btn-secondary btn-export"
-                            style="padding: 0.35rem 0.75rem; font-size: 0.76rem; display: flex; align-items: center; gap: 0.35rem; border-radius: 999px; cursor: pointer;"
-                            title=move || if is_en() { "Download this chat session as Markdown (.md)" } else { "Diesen Chatverlauf als Markdown (.md) herunterladen" }
-                            on:click=move |_| {
-                                let cur_id = active_session_id.get();
-                                let title = chat_sessions
-                                    .get()
-                                    .into_iter()
-                                    .find(|s| s.id == cur_id)
-                                    .map(|s| s.title)
-                                    .unwrap_or_else(|| if is_en() { "Chat".to_string() } else { "Chat".to_string() });
-                                let model = llm_model_sig.get();
-                                let rag = use_rag.get();
-                                let r_mode = reranker_mode.get();
-                                let tn = top_n.get();
-                                let ctx = num_ctx_sig.get();
-                                let think = think_mode_sig.get();
-                                let msgs = messages.get();
-                                export_active_chat(&title, &model, rag, &r_mode, tn, ctx, think, &msgs);
-                            }
-                        >
-                            <span>"📥"</span>
-                            <span>{move || if is_en() { "Export (.md)" } else { "Export (.md)" }}</span>
-                        </button>
-
                         <button
                             class="btn btn-secondary"
                             style="padding: 0.35rem 0.75rem; font-size: 0.76rem; display: flex; align-items: center; gap: 0.5rem; border-radius: 999px;"
@@ -3616,18 +3803,21 @@ fn App() -> impl IntoView {
                                                             mods.insert(0, saved_mod.clone());
                                                         }
                                                         set_llm_provider_sig.set(saved_prov.clone());
-                                                        set_llm_base_url_sig.set(saved_url);
+                                                        set_llm_base_url_sig.set(saved_url.clone());
                                                         set_llm_model_sig.set(saved_mod.clone());
                                                         set_llm_has_saved_key.set(has_k);
                                                         set_llm_api_key_sig.set(String::new());
                                                         set_available_models.set(mods);
                                                         set_backend_info.set(format!("LLM: {} ({})", saved_mod, saved_prov));
+                                                        save_llm_pref_to_storage(&saved_prov, &saved_url, &saved_mod);
                                                         let activated_msg = if is_en() {
                                                             format!("✅ Activated: {} ({})!", saved_mod, saved_prov)
                                                         } else {
                                                             format!("✅ Aktiviert: {} ({})!", saved_mod, saved_prov)
                                                         };
                                                         set_llm_config_status.set(activated_msg);
+                                                        // Dialog nach erfolgreichem Speichern automatisch schließen
+                                                        set_show_llm_modal.set(false);
                                                     }
                                                 }
                                                 _ => {
