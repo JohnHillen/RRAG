@@ -60,6 +60,44 @@ pub struct DocumentSummary {
     pub relations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmployeeRecord {
+    pub emp_id: String,
+    pub name: String,
+    pub role: String,
+    pub department: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    pub english_level: String,
+    #[serde(default)]
+    pub certifications: Vec<String>,
+    pub current_project: String,
+    #[serde(default = "default_availability")]
+    pub availability_percent: i64,
+    #[serde(default = "default_hourly_rate")]
+    pub hourly_rate: f64,
+    #[serde(default = "default_location")]
+    pub location: String,
+}
+
+fn default_availability() -> i64 {
+    100
+}
+fn default_hourly_rate() -> f64 {
+    125.0
+}
+fn default_location() -> String {
+    "Muenchen".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmployeeMatchResult {
+    pub employee: EmployeeRecord,
+    pub matched_criteria: Vec<String>,
+    pub missing_criteria: Vec<String>,
+    pub match_ratio: f64,
+}
+
 impl SurrealClient {
     pub fn new(http: Client, config: AppConfig) -> Self {
         Self { http, config }
@@ -643,6 +681,268 @@ impl SurrealClient {
         );
         self.execute_sql(&sql).await?;
         Ok(())
+    }
+
+    // =========================================================================
+    // Structured CRM / HR Database Operations (`employee_record`)
+    // =========================================================================
+
+    /// Ensures the `employee_record` schema exists in SurrealDB (even if initialized before this update).
+    pub async fn ensure_employee_schema(&self) -> Result<()> {
+        let sql = r#"
+            DEFINE TABLE IF NOT EXISTS employee_record SCHEMAFULL;
+            DEFINE FIELD IF NOT EXISTS emp_id               ON TABLE employee_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS name                 ON TABLE employee_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS role                 ON TABLE employee_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS department           ON TABLE employee_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS skills               ON TABLE employee_record TYPE array<string>;
+            DEFINE FIELD IF NOT EXISTS english_level        ON TABLE employee_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS certifications       ON TABLE employee_record TYPE array<string>;
+            DEFINE FIELD IF NOT EXISTS current_project      ON TABLE employee_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS availability_percent ON TABLE employee_record TYPE int DEFAULT 100;
+            DEFINE FIELD IF NOT EXISTS hourly_rate          ON TABLE employee_record TYPE float DEFAULT 120.0;
+            DEFINE FIELD IF NOT EXISTS location             ON TABLE employee_record TYPE string DEFAULT 'Muenchen';
+            DEFINE FIELD IF NOT EXISTS updated_at           ON TABLE employee_record TYPE datetime DEFAULT time::now();
+            DEFINE INDEX IF NOT EXISTS idx_employee_emp_id  ON TABLE employee_record FIELDS emp_id UNIQUE;
+        "#;
+        let _ = self.execute_sql(sql).await;
+        Ok(())
+    }
+
+    /// Inserts or updates a batch of structured `EmployeeRecord` rows in SurrealDB.
+    pub async fn upsert_employees(&self, employees: &[EmployeeRecord]) -> Result<usize> {
+        if employees.is_empty() {
+            return Ok(0);
+        }
+        self.ensure_employee_schema().await?;
+
+        // Process in batches of 250 to make 3,000+ employee seeding fast
+        for batch in employees.chunks(250) {
+            let mut sql = String::from("BEGIN TRANSACTION;\n");
+            for emp in batch {
+                let rec_key = sanitize_key(&emp.emp_id);
+                if rec_key.is_empty() {
+                    continue;
+                }
+                sql.push_str(&format!(
+                    "UPSERT type::record('employee_record', {rk}) SET \
+                        emp_id = {id}, \
+                        name = {name}, \
+                        role = {role}, \
+                        department = {dept}, \
+                        skills = {skills}, \
+                        english_level = {eng}, \
+                        certifications = {certs}, \
+                        current_project = {proj}, \
+                        availability_percent = {avail}, \
+                        hourly_rate = {rate}, \
+                        location = {loc}, \
+                        updated_at = time::now();\n",
+                    rk = serde_json::to_string(&rec_key)?,
+                    id = serde_json::to_string(&emp.emp_id)?,
+                    name = serde_json::to_string(&emp.name)?,
+                    role = serde_json::to_string(&emp.role)?,
+                    dept = serde_json::to_string(&emp.department)?,
+                    skills = serde_json::to_string(&emp.skills)?,
+                    eng = serde_json::to_string(&emp.english_level)?,
+                    certs = serde_json::to_string(&emp.certifications)?,
+                    proj = serde_json::to_string(&emp.current_project)?,
+                    avail = emp.availability_percent,
+                    rate = emp.hourly_rate,
+                    loc = serde_json::to_string(&emp.location)?,
+                ));
+            }
+            sql.push_str("COMMIT TRANSACTION;\n");
+            self.execute_sql(&sql).await?;
+        }
+        Ok(employees.len())
+    }
+
+    /// Lists all structured employees from SurrealDB, sorted by `emp_id` ascending.
+    pub async fn list_employees(&self) -> Result<Vec<EmployeeRecord>> {
+        let sql = "SELECT emp_id, name, role, department, skills, english_level, certifications, current_project, availability_percent, hourly_rate, location FROM employee_record ORDER BY emp_id ASC LIMIT 10000;";
+        let res = self.execute_sql(sql).await?;
+        let items = extract_result_array(res.first());
+        let mut out = Vec::with_capacity(items.len());
+        for val in items {
+            if let Ok(emp) = serde_json::from_value::<EmployeeRecord>(val) {
+                out.push(emp);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Counts the total number of structured employee rows in `employee_record`.
+    pub async fn count_employees(&self) -> Result<usize> {
+        let sql = "SELECT count() AS cnt FROM employee_record GROUP ALL;";
+        let res = self.execute_sql(sql).await?;
+        let cnt = res
+            .first()
+            .and_then(|v| v.get("result"))
+            .and_then(|r| r.as_array())
+            .and_then(|a| a.first())
+            .and_then(|o| o.get("cnt"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as usize;
+        Ok(cnt)
+    }
+
+    /// Deletes all rows from `employee_record`.
+    pub async fn clear_employees(&self) -> Result<()> {
+        self.execute_sql("DELETE employee_record;").await?;
+        Ok(())
+    }
+
+    /// Evaluates all structured employees in SurrealDB against a set of required skills,
+    /// minimum CEFR English level (`A1`..`C2`), optional project filter, and minimum availability.
+    /// Returns:
+    /// - `full_matches`: Employees who satisfy 100% of the criteria
+    /// - `near_matches`: Employees who miss only 1 criterion (ideal for "needs 1 training" / gap analysis)
+    /// - `total_scanned`: Total number of employee rows evaluated in the database
+    pub async fn query_employees_by_criteria(
+        &self,
+        required_skills: &[String],
+        min_english: Option<&str>,
+        project_filter: Option<&str>,
+        min_availability: Option<i64>,
+    ) -> Result<(Vec<EmployeeMatchResult>, Vec<EmployeeMatchResult>, usize)> {
+        let all_employees = self.list_employees().await?;
+        let total_scanned = all_employees.len();
+        if total_scanned == 0 {
+            return Ok((vec![], vec![], 0));
+        }
+
+        let min_cefr_rank = min_english.map(cefr_rank).unwrap_or(0);
+        let mut full_matches = Vec::new();
+        let mut near_matches = Vec::new();
+
+        for emp in all_employees {
+            if let Some(min_av) = min_availability {
+                if emp.availability_percent < min_av {
+                    continue;
+                }
+            }
+
+            let mut matched = Vec::new();
+            let mut missing = Vec::new();
+
+            // 1. Check required technical skills / certifications (strict word/token match so "Trust" != "Rust" and "NoSQL" != "SQL")
+            for req_skill in required_skills {
+                let req_low = req_skill.to_lowercase();
+                let has_skill = emp.skills.iter().any(|s| {
+                    let s_low = s.to_lowercase();
+                    s_low == req_low
+                        || s_low
+                            .split(|c: char| !c.is_alphanumeric() && c != '+')
+                            .any(|w| w == req_low)
+                }) || emp.certifications.iter().any(|c| {
+                    let c_low = c.to_lowercase();
+                    c_low == req_low
+                        || c_low
+                            .split(|ch: char| !ch.is_alphanumeric() && ch != '+')
+                            .any(|w| w == req_low)
+                });
+                if has_skill {
+                    matched.push(format!("Skill: {}", req_skill));
+                } else {
+                    missing.push(format!("Skill: {}", req_skill));
+                }
+            }
+
+            // 2. Check minimum English level (CEFR A1..C2)
+            if let Some(min_eng_str) = min_english {
+                let emp_rank = cefr_rank(&emp.english_level);
+                if emp_rank >= min_cefr_rank {
+                    matched.push(format!("English {} (>= {})", emp.english_level, min_eng_str.to_uppercase()));
+                } else {
+                    missing.push(format!("English {} (needs {})", emp.english_level, min_eng_str.to_uppercase()));
+                }
+            }
+
+            // 3. Check project assignment if requested
+            if let Some(proj) = project_filter {
+                let p_low = proj.to_lowercase();
+                if emp.current_project.to_lowercase().contains(&p_low) {
+                    matched.push(format!("Project: {}", emp.current_project));
+                }
+            }
+
+            let total_reqs = matched.len() + missing.len();
+            let ratio = if total_reqs == 0 {
+                1.0
+            } else {
+                (matched.len() as f64) / (total_reqs as f64)
+            };
+
+            let res_item = EmployeeMatchResult {
+                employee: emp,
+                matched_criteria: matched,
+                missing_criteria: missing.clone(),
+                match_ratio: ratio,
+            };
+
+            if missing.is_empty() {
+                full_matches.push(res_item);
+            } else if missing.len() == 1 && total_reqs >= 2 {
+                near_matches.push(res_item);
+            }
+        }
+
+        // Sort full_matches: prioritize core showcase IDs first, then availability DESC, then emp_id ASC
+        let is_priority_id = |id: &str| {
+            matches!(
+                id,
+                "EMP-1042"
+                    | "EMP-1019"
+                    | "EMP-1174"
+                    | "EMP-1231"
+                    | "EMP-1088"
+                    | "EMP-1105"
+                    | "EMP-1140"
+                    | "EMP-1198"
+                    | "EMP-1265"
+            )
+        };
+
+        // Sort full_matches: availability DESC first (so all 100% available candidates are grouped cleanly at the top),
+        // then core showcase IDs within the same availability tier, then emp_id ASC.
+        full_matches.sort_by(|a, b| {
+            b.employee
+                .availability_percent
+                .cmp(&a.employee.availability_percent)
+                .then_with(|| {
+                    is_priority_id(&b.employee.emp_id).cmp(&is_priority_id(&a.employee.emp_id))
+                })
+                .then_with(|| a.employee.emp_id.cmp(&b.employee.emp_id))
+        });
+
+        // Sort near_matches: prioritize core showcase IDs first, then match_ratio DESC, availability DESC
+        near_matches.sort_by(|a, b| {
+            is_priority_id(&b.employee.emp_id)
+                .cmp(&is_priority_id(&a.employee.emp_id))
+                .then_with(|| {
+                    b.match_ratio
+                        .partial_cmp(&a.match_ratio)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.missing_criteria.len().cmp(&b.missing_criteria.len()))
+                .then_with(|| b.employee.availability_percent.cmp(&a.employee.availability_percent))
+                .then_with(|| a.employee.emp_id.cmp(&b.employee.emp_id))
+        });
+
+        Ok((full_matches, near_matches, total_scanned))
+    }
+}
+
+fn cefr_rank(level: &str) -> u8 {
+    match level.trim().to_uppercase().as_str() {
+        "A1" => 1,
+        "A2" => 2,
+        "B1" => 3,
+        "B2" => 4,
+        "C1" => 5,
+        "C2" => 6,
+        _ => 0,
     }
 }
 

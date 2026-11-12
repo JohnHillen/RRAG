@@ -59,3 +59,20 @@ DEFINE TABLE IF NOT EXISTS mentions TYPE RELATION IN chunk OUT entity;
 DEFINE TABLE IF NOT EXISTS relates_to TYPE RELATION IN entity OUT entity;
 DEFINE FIELD IF NOT EXISTS relation_type ON TABLE relates_to TYPE string DEFAULT 'related_to';
 DEFINE FIELD IF NOT EXISTS weight        ON TABLE relates_to TYPE float DEFAULT 1.0;
+
+-- 6. Structured CRM / HR Employee Table (Relational + Graph Hybrid)
+DEFINE TABLE IF NOT EXISTS employee_record SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS emp_id               ON TABLE employee_record TYPE string;
+DEFINE FIELD IF NOT EXISTS name                 ON TABLE employee_record TYPE string;
+DEFINE FIELD IF NOT EXISTS role                 ON TABLE employee_record TYPE string;
+DEFINE FIELD IF NOT EXISTS department           ON TABLE employee_record TYPE string;
+DEFINE FIELD IF NOT EXISTS skills               ON TABLE employee_record TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS english_level        ON TABLE employee_record TYPE string;
+DEFINE FIELD IF NOT EXISTS certifications       ON TABLE employee_record TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS current_project      ON TABLE employee_record TYPE string;
+DEFINE FIELD IF NOT EXISTS availability_percent ON TABLE employee_record TYPE int DEFAULT 100;
+DEFINE FIELD IF NOT EXISTS hourly_rate          ON TABLE employee_record TYPE float DEFAULT 120.0;
+DEFINE FIELD IF NOT EXISTS location             ON TABLE employee_record TYPE string DEFAULT 'Muenchen';
+DEFINE FIELD IF NOT EXISTS updated_at           ON TABLE employee_record TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_employee_emp_id  ON TABLE employee_record FIELDS emp_id UNIQUE;
+

@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
 };
 use config::AppConfig;
-use db::{RetrievedChunk, SurrealClient};
+use db::{EmployeeRecord, GraphEntity, GraphRelation, RetrievedChunk, SurrealClient};
 use ingestion::InferenceClient;
 use llm::{ChatMessage, LlmClient, LlmRuntimeConfig};
 use reqwest::Client;
@@ -116,6 +116,33 @@ pub struct LlmConfigUpdateRequest {
     pub llm_model: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CrmSeedRequest {
+    #[serde(default = "default_seed_count")]
+    pub count: usize,
+}
+
+fn default_seed_count() -> usize {
+    300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CrmImportRequest {
+    pub employees: Vec<EmployeeRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CrmQueryRequest {
+    #[serde(default)]
+    pub required_skills: Vec<String>,
+    #[serde(default)]
+    pub min_english: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub min_availability: Option<i64>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
@@ -128,22 +155,28 @@ async fn main() -> Result<()> {
 
     let config = AppConfig::from_env();
     let http = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(120))
+        .build()?;
+    let llm_http = Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(900))
         .build()?;
 
     let state = AppState {
         db: SurrealClient::new(http.clone(), config.clone()),
         inference: InferenceClient::new(http.clone(), config.clone()),
-        llm: LlmClient::new(http, config.clone()),
+        llm: LlmClient::new(llm_http, config.clone()),
         config: config.clone(),
     };
 
-    // Load persisted system LLM settings from SurrealDB (survives restarts & setup.sh)
+    // Load persisted system LLM settings from SurrealDB & ensure structured CRM schema
     let db_clone = state.db.clone();
     let llm_clone = state.llm.clone();
     tokio::spawn(async move {
         // Wait briefly for SurrealDB to finish initial container healthcheck if starting concurrently
         for _ in 0..15 {
+            let _ = db_clone.ensure_employee_schema().await;
             if let Ok(Some((prov, url, key, model))) = db_clone.get_system_llm_settings().await {
                 llm_clone.update_runtime_config(prov.clone(), url.clone(), key, model.clone());
                 info!(
@@ -167,6 +200,13 @@ async fn main() -> Result<()> {
         .route("/v1/documents", get(list_documents_handler))
         .route("/v1/documents/deduplicate", post(deduplicate_documents_handler))
         .route("/v1/documents/:doc_id", delete(delete_document_handler))
+        .route(
+            "/v1/crm/employees",
+            get(list_crm_employees_handler).delete(clear_crm_employees_handler),
+        )
+        .route("/v1/crm/seed", post(seed_crm_employees_handler))
+        .route("/v1/crm/import", post(import_crm_employees_handler))
+        .route("/v1/crm/query", post(query_crm_employees_handler))
         .route("/v1/ingest", post(ingest_json_handler))
         .route("/v1/ingest/file", post(ingest_file_handler))
         .route("/v1/extract", post(extract_ephemeral_file_handler))
@@ -1272,7 +1312,7 @@ pub async fn execute_retrieval_pipeline(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let db_ms = t_db.elapsed().as_millis() as u64;
+    let mut db_ms = t_db.elapsed().as_millis() as u64;
 
     let t_rerank = std::time::Instant::now();
     // Rerank the full candidate pool so we can compose a balanced multi-hop result set
@@ -1284,33 +1324,38 @@ pub async fn execute_retrieval_pipeline(
         .await?;
     let rerank_ms = t_rerank.elapsed().as_millis() as u64;
 
-    // Multi-Hop Slot Balancing:
+    // Multi-Hop Slot Balancing & Enterprise Structured SQL/CRM Query:
     // When the query asks for employees/candidates ("mitarbeiter", "employee", "kandidat") and `top_n >= 4`,
     // ensure the #1 Requirement Anchor (e.g. customer contract) is preserved AND fill the remaining slots
     // with the highest-ranked employee profiles so no candidate is crowded out by secondary project docs.
     let is_employee_lookup = query_lower.contains("mitarbeiter")
         || query_lower.contains("employee")
         || query_lower.contains("kandidat")
-        || query_lower.contains("candidate");
+        || query_lower.contains("candidate")
+        || query_lower.contains("weiterbildung")
+        || query_lower.contains("schulung")
+        || query_lower.contains("besetzung");
 
-    let final_chunks = if is_employee_lookup && top_n >= 4 && ranked_pool.len() > top_n {
+    // Find the primary requirement anchor chunk (customer contract / SLA / project spec)
+    let primary_anchor = ranked_pool
+        .iter()
+        .find(|c| {
+            let t = c.doc_title.to_lowercase();
+            t.contains("vereinbarung") || t.contains("vertrag") || t.contains("sla") || t.contains("[sales]")
+        })
+        .or_else(|| {
+            ranked_pool.iter().find(|c| {
+                !c.doc_title.to_lowercase().contains("mitarbeiter")
+                    && !c.content.to_lowercase().contains("mitarbeiterprofil:")
+            })
+        })
+        .cloned();
+
+    let mut final_chunks = if is_employee_lookup && top_n >= 4 && ranked_pool.len() > top_n {
         let mut selected: Vec<RetrievedChunk> = Vec::with_capacity(top_n);
 
         // 1. Keep the #1 anchor document (preferring customer contract/SLA defining mandatory requirements)
-        if let Some(first_anchor) = ranked_pool
-            .iter()
-            .find(|c| {
-                let t = c.doc_title.to_lowercase();
-                t.contains("vereinbarung") || t.contains("vertrag") || t.contains("sla") || t.contains("[sales]")
-            })
-            .or_else(|| {
-                ranked_pool.iter().find(|c| {
-                    !c.doc_title.to_lowercase().contains("mitarbeiter")
-                        && !c.content.to_lowercase().contains("mitarbeiterprofil:")
-                })
-            })
-            .or_else(|| ranked_pool.first())
-        {
+        if let Some(first_anchor) = primary_anchor.as_ref().or_else(|| ranked_pool.first()) {
             selected.push(first_anchor.clone());
         }
 
@@ -1348,6 +1393,50 @@ pub async fn execute_retrieval_pipeline(
             reranker_used = format!("{} + 🕸️ 2-Hop (+{} Chunks)", reranker_used, hop2_added);
         } else {
             reranker_used = format!("{} + 🕸️ 2-Hop Query-Expansion", reranker_used);
+        }
+    }
+
+    // --- Hop-2 Enterprise CRM / HR Relational DB Query (100% Recall across 300+ Employees) ---
+    // If the structured `employee_record` table in SurrealDB contains records and the user asks an
+    // employee/candidate/staffing question, execute a deterministic SQL/SurrealQL query using the
+    // mandatory skills & language level discovered from the query + Hop-1 contract anchor!
+    if is_employee_lookup {
+        let t_crm = std::time::Instant::now();
+        if let Ok(emp_count) = state.db.count_employees().await {
+            if emp_count > 0 {
+                let (req_skills, min_eng) =
+                    extract_structured_crm_criteria(query, primary_anchor.as_ref());
+                if let Ok((full_matches, near_matches, total_scanned)) = state
+                    .db
+                    .query_employees_by_criteria(&req_skills, min_eng.as_deref(), None, None)
+                    .await
+                {
+                    db_ms += t_crm.elapsed().as_millis() as u64;
+                    let criteria_summary = format!(
+                        "Pflicht-Skills: {:?}, Min. Englisch: {}",
+                        req_skills,
+                        min_eng.as_deref().unwrap_or("Beliebig")
+                    );
+                    let crm_chunk = format_crm_query_as_chunk(
+                        &full_matches,
+                        &near_matches,
+                        total_scanned,
+                        &criteria_summary,
+                        primary_anchor.as_ref(),
+                    );
+                    // Insert right after the #1 contract anchor (or at position 0) so the LLM & UI
+                    // get both the unstructured PDF contract AND the complete 300-employee SQL result!
+                    let insert_idx = if final_chunks.is_empty() { 0 } else { 1 };
+                    final_chunks.insert(insert_idx, crm_chunk);
+                    if final_chunks.len() > top_n.max(2) {
+                        final_chunks.truncate(top_n.max(2));
+                    }
+                    reranker_used = format!(
+                        "{} + 🗄️ SQL/CRM-DB ({} Records)",
+                        reranker_used, total_scanned
+                    );
+                }
+            }
         }
     }
 
@@ -1431,4 +1520,865 @@ fn build_conversational_retrieval_query(messages: &[ChatMessage]) -> String {
     } else {
         latest.to_string()
     }
+}
+
+/// Extracts structured employee filter criteria (`required_skills`, `min_english_level`)
+/// from the user query AND the Hop-1 primary requirement anchor (e.g. customer contract PDF).
+fn extract_structured_crm_criteria(
+    query: &str,
+    primary_anchor: Option<&RetrievedChunk>,
+) -> (Vec<String>, Option<String>) {
+    let combined_text = match primary_anchor {
+        Some(anchor) => format!("{}\n{}", query, anchor.content),
+        None => query.to_string(),
+    };
+    let lower = combined_text.to_lowercase();
+
+    let canonical_skills = [
+        ("rust", "Rust"),
+        ("sql", "SQL"),
+        ("python", "Python"),
+        ("java", "Java"),
+        ("c++", "C++"),
+        ("golang", "Go"),
+        ("kubernetes", "Kubernetes"),
+        ("docker", "Docker"),
+        ("terraform", "Terraform"),
+        ("kafka", "Kafka"),
+        ("snowflake", "Snowflake"),
+        ("bigquery", "BigQuery"),
+        ("sap", "SAP"),
+        ("react", "React"),
+        ("typescript", "TypeScript"),
+    ];
+
+    let mut skills: Vec<String> = Vec::new();
+    for (token, canonical) in canonical_skills {
+        let matched = lower
+            .split(|c: char| !c.is_alphanumeric() && c != '+')
+            .any(|w| w == token);
+        if matched && !skills.iter().any(|s| s.eq_ignore_ascii_case(canonical)) {
+            skills.push(canonical.to_string());
+        }
+    }
+
+    // Extract minimum CEFR English level (B1, B2, C1, C2)
+    let mut min_english: Option<String> = None;
+    for (lvl_tok, lvl_norm) in [("c2", "C2"), ("c1", "C1"), ("b2", "B2"), ("b1", "B1")] {
+        let has_lvl = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == lvl_tok);
+        if has_lvl {
+            min_english = Some(lvl_norm.to_string());
+            break;
+        }
+    }
+
+    (skills, min_english)
+}
+
+/// Formats the deterministic SurrealDB `employee_record` query result as a high-priority `RetrievedChunk`
+/// so both the LLM and the UI Sources Inspector see all 100% matches and 1-skill training near-matches
+/// across all 300 or 3,000+ employees without Top-K vector truncation.
+pub fn format_crm_query_as_chunk(
+    full_matches: &[db::EmployeeMatchResult],
+    near_matches: &[db::EmployeeMatchResult],
+    total_scanned: usize,
+    criteria_summary: &str,
+    primary_anchor: Option<&RetrievedChunk>,
+) -> RetrievedChunk {
+    let anchor_label = primary_anchor
+        .map(|a| a.doc_title.as_str())
+        .unwrap_or("Direkte Benutzerabfrage");
+
+    let mut md = String::new();
+    md.push_str(&format!(
+        "### 🗄️ Deterministische SQL/CRM-Abfrage (`employee_record` Tabelle in SurrealDB)\n\
+         - **Geprüfte Mitarbeiter-Datensätze gesamt**: **{} Mitarbeiter** (100% Abdeckung ohne Top-K Vektor-Verlust)\n\
+         - **Abgeleitete Pflichtkriterien (aus Hop-1 `{}`)**: `{}`\n",
+        total_scanned, anchor_label, criteria_summary
+    ));
+
+    // Compute exact SQL aggregate metrics across ALL full_matches (even if 300+ matches)
+    if !full_matches.is_empty() {
+        let count_100_avail = full_matches
+            .iter()
+            .filter(|m| m.employee.availability_percent >= 100)
+            .count();
+        let count_80_avail = full_matches
+            .iter()
+            .filter(|m| m.employee.availability_percent >= 80)
+            .count();
+        let sum_rate: f64 = full_matches.iter().map(|m| m.employee.hourly_rate).sum();
+        let avg_rate = sum_rate / (full_matches.len() as f64);
+        let min_rate = full_matches
+            .iter()
+            .map(|m| m.employee.hourly_rate)
+            .fold(f64::INFINITY, f64::min);
+        let max_rate = full_matches
+            .iter()
+            .map(|m| m.employee.hourly_rate)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let mut city_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for m in full_matches {
+            *city_counts.entry(m.employee.location.clone()).or_insert(0) += 1;
+        }
+        let city_summary: Vec<String> = city_counts
+            .iter()
+            .map(|(city, cnt)| format!("{}: {}", city, cnt))
+            .collect();
+
+        let avail_100_names: Vec<String> = full_matches
+            .iter()
+            .filter(|m| m.employee.availability_percent >= 100)
+            .take(10)
+            .map(|m| {
+                format!(
+                    "**{}** (`{}`, {}, {:.0} €/h)",
+                    m.employee.name, m.employee.emp_id, m.employee.location, m.employee.hourly_rate
+                )
+            })
+            .collect();
+        let avail_100_suffix = if count_100_avail > 10 {
+            format!(" *(+ {} weitere mit 100% Verfügbarkeit)*", count_100_avail - 10)
+        } else {
+            String::new()
+        };
+
+        md.push_str(&format!(
+            "- **📊 SQL-Gesamtstatistik über alle {} Volltreffer**:\n  \
+               • **Sofort verfügbar (`>= 80%`)**: **{} Mitarbeiter** — davon **{} Mitarbeiter mit 100% Verfügbarkeit**\n  \
+               • **Kandidaten mit 100% Verfügbarkeit ({} gesamt)**: {}{}\n  \
+               • **Stundensätze**: Ø **{:.1} €/h** (Spanne: {:.0} €/h – {:.0} €/h)\n  \
+               • **Verteilung nach Standort**: {}\n\n",
+            full_matches.len(),
+            count_80_avail,
+            count_100_avail,
+            count_100_avail,
+            if avail_100_names.is_empty() {
+                "Keine".to_string()
+            } else {
+                avail_100_names.join(", ")
+            },
+            avail_100_suffix,
+            avg_rate,
+            min_rate,
+            max_rate,
+            city_summary.join(", ")
+        ));
+    } else {
+        md.push('\n');
+    }
+
+    const MAX_DETAILED_FULL: usize = 35;
+    md.push_str(&format!(
+        "#### ✅ 1. Volltreffer — Erfüllen ALLE Pflichtkriterien ({} von {} Mitarbeitern):\n",
+        full_matches.len(),
+        total_scanned
+    ));
+
+    if full_matches.is_empty() {
+        md.push_str("- *Keine Mitarbeiter erfüllen aktuell 100% aller geforderten Pflichtkriterien.*\n\n");
+    } else {
+        md.push_str("| ID | Name | Rolle | Kern-Skills | Englisch | Projekt | Verfügbarkeit | Stundensatz | Standort |\n");
+        md.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
+        for m in full_matches.iter().take(MAX_DETAILED_FULL) {
+            let emp = &m.employee;
+            md.push_str(&format!(
+                "| `{}` | **{}** | {} | {} | **{}** | {} | **{}%** | {:.0} €/h | {} |\n",
+                emp.emp_id,
+                emp.name,
+                emp.role,
+                emp.skills.join(", "),
+                emp.english_level,
+                emp.current_project,
+                emp.availability_percent,
+                emp.hourly_rate,
+                emp.location
+            ));
+        }
+        if full_matches.len() > MAX_DETAILED_FULL {
+            let rest = &full_matches[MAX_DETAILED_FULL..];
+            let preview_ids: Vec<String> = rest
+                .iter()
+                .take(25)
+                .map(|m| format!("{} (`{}`, {}%, {})", m.employee.name, m.employee.emp_id, m.employee.availability_percent, m.employee.location))
+                .collect();
+            md.push_str(&format!(
+                "\n*(➕ **Weitere {} Volltreffer** in der SQL-Datenbank erfüllen ebenfalls 100% der Pflichtkriterien — Detailtabelle oben zeigt die Top {} nach Priorität & Verfügbarkeit. Auszug weiterer Treffer: {}{})*\n",
+                rest.len(),
+                MAX_DETAILED_FULL,
+                preview_ids.join(", "),
+                if rest.len() > 25 { ", ..." } else { "" }
+            ));
+        }
+        md.push('\n');
+    }
+
+    const MAX_DETAILED_NEAR: usize = 15;
+    md.push_str(&format!(
+        "#### 🎓 2. Kandidaten mit Weiterbildungs-Potenzial — Gap-Analyse: Es fehlt genau 1 Pflichtkriterium ({} von {} Mitarbeitern):\n",
+        near_matches.len(),
+        total_scanned
+    ));
+
+    if near_matches.is_empty() {
+        md.push_str("- *Keine Kandidaten mit genau 1 fehlendem Kriterium gefunden.*\n\n");
+    } else {
+        // Group near_matches by missing criterion for summary
+        let mut gap_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for m in near_matches {
+            let gap_key = m.missing_criteria.join(", ");
+            *gap_counts.entry(gap_key).or_insert(0) += 1;
+        }
+        let gap_summary: Vec<String> = gap_counts
+            .iter()
+            .map(|(gap, cnt)| format!("`{}` ({} Mitarbeiter)", gap, cnt))
+            .collect();
+        md.push_str(&format!(
+            "- **Übersicht Weiterbildungsbedarf über alle {} Kandidaten**: {}\n\n",
+            near_matches.len(),
+            gap_summary.join(" · ")
+        ));
+
+        md.push_str("| ID | Name | Rolle | Vorhandene Skills | Englisch | ⚠️ Fehlendes Kriterium (Schulung) | Projekt | Verfügbarkeit | Satz | Standort |\n");
+        md.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
+        for m in near_matches.iter().take(MAX_DETAILED_NEAR) {
+            let emp = &m.employee;
+            md.push_str(&format!(
+                "| `{}` | **{}** | {} | {} | **{}** | **{}** | {} | {}% | {:.0} €/h | {} |\n",
+                emp.emp_id,
+                emp.name,
+                emp.role,
+                emp.skills.join(", "),
+                emp.english_level,
+                m.missing_criteria.join(", "),
+                emp.current_project,
+                emp.availability_percent,
+                emp.hourly_rate,
+                emp.location
+            ));
+        }
+        if near_matches.len() > MAX_DETAILED_NEAR {
+            md.push_str(&format!(
+                "\n*(➕ Weitere {} Kandidaten mit genau 1 Weiterbildungs-Lücke in der SQL-Datenbank vorhanden; oben sind die Top {} nach Verfügbarkeit gelistet.)*\n",
+                near_matches.len() - MAX_DETAILED_NEAR,
+                MAX_DETAILED_NEAR
+            ));
+        }
+        md.push('\n');
+    }
+
+    let excluded = total_scanned.saturating_sub(full_matches.len() + near_matches.len());
+    md.push_str(&format!(
+        "*(📊 SQL-Filter-Statistik: Weitere {} von {} Mitarbeitern in der Datenbank weichen in 2 oder mehr Pflichtkriterien ab und wurden deterministisch per SQL ausgeschlossen.)*",
+        excluded, total_scanned
+    ));
+
+    // Cap graph entities/relations on the chunk to Top 12 so 300+ matches never bloat the graph badge list
+    let mut entities = Vec::new();
+    let mut relations = Vec::new();
+    for m in full_matches.iter().take(8) {
+        let emp = &m.employee;
+        entities.push(GraphEntity {
+            name: format!("{} ({})", emp.name, emp.emp_id),
+            entity_type: "Employee (100% Match)".to_string(),
+            description: Some(emp.role.clone()),
+        });
+        for sk in emp.skills.iter().take(3) {
+            relations.push(GraphRelation {
+                from: emp.name.clone(),
+                relation: "HAS_SKILL".to_string(),
+                to: sk.clone(),
+            });
+        }
+    }
+    for m in near_matches.iter().take(6) {
+        let emp = &m.employee;
+        entities.push(GraphEntity {
+            name: format!("{} ({})", emp.name, emp.emp_id),
+            entity_type: "Employee (1-Skill Gap)".to_string(),
+            description: Some(emp.role.clone()),
+        });
+        for miss in &m.missing_criteria {
+            relations.push(GraphRelation {
+                from: emp.name.clone(),
+                relation: "NEEDS_TRAINING".to_string(),
+                to: miss.clone(),
+            });
+        }
+    }
+
+    RetrievedChunk {
+        id: "crm_sql_live_query_result".to_string(),
+        doc_id: "crm_employee_record_table".to_string(),
+        doc_title: format!(
+            "🗄️ [CRM/HR-DB SQL Query] Strukturierte Mitarbeiter-Datenbank ({} Datensätze geprüft, {} Volltreffer)",
+            total_scanned,
+            full_matches.len()
+        ),
+        chunk_index: 0,
+        content: md,
+        rrf_score: 0.99,
+        rerank_score: Some(0.995),
+        entities,
+        relations,
+        related_entities: Vec::new(),
+        relations_out: Vec::new(),
+        relations_in: Vec::new(),
+    }
+}
+
+/// Lists all structured employee records in SurrealDB (`GET /v1/crm/employees`)
+async fn list_crm_employees_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.list_employees().await {
+        Ok(employees) => (
+            StatusCode::OK,
+            Json(json!({
+                "count": employees.len(),
+                "employees": employees
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Clears all structured employee records in SurrealDB (`DELETE /v1/crm/employees`)
+async fn clear_crm_employees_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.clear_employees().await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "cleared"
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Imports a batch of structured employee records (`POST /v1/crm/import`)
+async fn import_crm_employees_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CrmImportRequest>,
+) -> impl IntoResponse {
+    match state.db.upsert_employees(&req.employees).await {
+        Ok(n) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "imported",
+                "imported_count": n
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Executes a structured SQL/CRM employee query (`POST /v1/crm/query`)
+async fn query_crm_employees_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CrmQueryRequest>,
+) -> impl IntoResponse {
+    match state
+        .db
+        .query_employees_by_criteria(
+            &req.required_skills,
+            req.min_english.as_deref(),
+            req.project.as_deref(),
+            req.min_availability,
+        )
+        .await
+    {
+        Ok((full_matches, near_matches, total_scanned)) => (
+            StatusCode::OK,
+            Json(json!({
+                "total_employees_in_db": total_scanned,
+                "full_matches": full_matches,
+                "partial_matches": near_matches
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Seeds a realistic 300- or 3,000-employee enterprise dataset into SurrealDB (`POST /v1/crm/seed`)
+async fn seed_crm_employees_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CrmSeedRequest>,
+) -> impl IntoResponse {
+    let target_count = req.count.clamp(10, 10_000);
+    let _ = state.db.clear_employees().await;
+    let demo_employees = generate_demo_employees(target_count);
+    match state.db.upsert_employees(&demo_employees).await {
+        Ok(inserted) => {
+            info!(
+                "Seeded {} structured employee records into SurrealDB (employee_record).",
+                inserted
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "seeded",
+                    "count": inserted
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Deterministically generates `count` realistic employee records (e.g. 300 or 3,000) for the CRM/HR database:
+/// - **10% of `count` are 100% Full Matches (`Rust + SQL + >= B2`)**:
+///   - `count = 300` -> **30 full matches** (including `EMP-1042` Thomas Schmidt, `EMP-1019` Dr. Elena Rostova, `EMP-1174` Lukas Bergmann, `EMP-1231` Hannah Lindner + 26 additional Rust+SQL+B2/C1/C2 engineers)
+///   - `count = 3000` -> **300 full matches**
+/// - **5% of `count` are 1-Skill Gap Near-Matches**:
+///   - `count = 300` -> **15 near-matches** (including `EMP-1105` Michael Kurz, `EMP-1088` Sarah Weber, `EMP-1140` Markus Vogl, `EMP-1198` Julia Hartmann, `EMP-1265` David Chen + 10 additional 1-gap profiles)
+///   - `count = 3000` -> **150 near-matches**
+/// - **85% of `count` are diverse non-matching enterprise employees** (255 for 300, 2,550 for 3,000).
+fn generate_demo_employees(count: usize) -> Vec<EmployeeRecord> {
+    let mut list: Vec<EmployeeRecord> = Vec::with_capacity(count);
+    let target_full_matches = (count / 10).max(4);
+    let target_near_matches = (count / 20).max(5);
+
+    // 1. Canonical Showcase Profiles & Curated Multi-Hop Matches / Near-Matches (4 Full + 5 Near)
+    let curated = vec![
+        EmployeeRecord {
+            emp_id: "EMP-1042".into(),
+            name: "Thomas Schmidt".into(),
+            role: "Senior Systems & Cloud Engineer".into(),
+            department: "Core Platform Engineering".into(),
+            skills: vec![
+                "Rust".into(),
+                "SQL".into(),
+                "PostgreSQL".into(),
+                "SurrealDB".into(),
+                "Kubernetes".into(),
+                "Docker".into(),
+                "Terraform".into(),
+                "Kafka".into(),
+            ],
+            english_level: "C1".into(),
+            certifications: vec![
+                "Cambridge Advanced C1".into(),
+                "ISO/IEC 27001 Foundation".into(),
+            ],
+            current_project: "Projekt Alpha (Lead Backend Architekt)".into(),
+            availability_percent: 40,
+            hourly_rate: 145.0,
+            location: "München".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1105".into(),
+            name: "Michael Kurz".into(),
+            role: "Senior Data & Database Architect".into(),
+            department: "Data Science & Analytics".into(),
+            skills: vec![
+                "SQL".into(),
+                "PostgreSQL".into(),
+                "SurrealDB".into(),
+                "Snowflake".into(),
+                "BigQuery".into(),
+                "Python".into(),
+                "Java".into(),
+                "Go".into(),
+                "dbt".into(),
+            ], // Has SQL + B2 English, missing only Rust!
+            english_level: "B2".into(),
+            certifications: vec![
+                "TOEFL iBT 95 (B2)".into(),
+                "ISO/IEC 27001 Foundation".into(),
+            ],
+            current_project: "Projekt Alpha (Data Layer) & Projekt Titan".into(),
+            availability_percent: 80,
+            hourly_rate: 125.0,
+            location: "Stuttgart".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1088".into(),
+            name: "Sarah Weber".into(),
+            role: "Systems Developer".into(),
+            department: "Embedded & Performance Systems".into(),
+            skills: vec![
+                "Rust".into(),
+                "SQL".into(),
+                "SQLite".into(),
+                "C++".into(),
+                "Python".into(),
+                "Redis".into(),
+                "MongoDB".into(),
+            ], // Has Rust + SQL (SQLite), missing only English B2 (currently B1)!
+            english_level: "B1".into(),
+            certifications: vec!["BSI IT-Grundschutz".into()],
+            current_project: "Projekt Titan (High-Throughput Analytics Pipeline)".into(),
+            availability_percent: 70,
+            hourly_rate: 120.0,
+            location: "Frankfurt".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1019".into(),
+            name: "Dr. Elena Rostova".into(),
+            role: "Principal Rust & Database Engineer".into(),
+            department: "Cloud & Core Systems".into(),
+            skills: vec![
+                "Rust".into(),
+                "SQL".into(),
+                "PostgreSQL".into(),
+                "C++".into(),
+                "Kubernetes".into(),
+                "Linux".into(),
+            ],
+            english_level: "C1".into(),
+            certifications: vec!["ISO/IEC 27001 Lead Implementer".into()],
+            current_project: "Projekt Alpha (High-Throughput Storage)".into(),
+            availability_percent: 100,
+            hourly_rate: 155.0,
+            location: "München".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1174".into(),
+            name: "Lukas Bergmann".into(),
+            role: "Senior Backend Engineer (Automotive)".into(),
+            department: "Automotive & Embedded Systems".into(),
+            skills: vec![
+                "Rust".into(),
+                "SQL".into(),
+                "Docker".into(),
+                "Kafka".into(),
+                "Linux".into(),
+            ],
+            english_level: "B2".into(),
+            certifications: vec!["AWS Certified Developer".into()],
+            current_project: "Connected Car Telemetry".into(),
+            availability_percent: 90,
+            hourly_rate: 130.0,
+            location: "München".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1231".into(),
+            name: "Hannah Lindner".into(),
+            role: "Lead Platform & Systems Engineer".into(),
+            department: "Cloud & Core Systems".into(),
+            skills: vec![
+                "Rust".into(),
+                "SQL".into(),
+                "SurrealDB".into(),
+                "Terraform".into(),
+                "Kubernetes".into(),
+            ],
+            english_level: "C2".into(),
+            certifications: vec![
+                "Certified Kubernetes Administrator (CKA)".into(),
+                "ISO/IEC 27001 Foundation".into(),
+            ],
+            current_project: "Frei / Bench".into(),
+            availability_percent: 100,
+            hourly_rate: 148.0,
+            location: "Berlin".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1140".into(),
+            name: "Markus Vogl".into(),
+            role: "Embedded & Systems Rust Developer".into(),
+            department: "Automotive & Embedded Systems".into(),
+            skills: vec!["Rust".into(), "SQL".into(), "C++".into(), "Linux".into()],
+            english_level: "B1".into(), // Missing B2 English
+            certifications: vec!["ISTQB Certified Tester".into()],
+            current_project: "ECU Firmware Gateway".into(),
+            availability_percent: 100,
+            hourly_rate: 120.0,
+            location: "Ingolstadt".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1198".into(),
+            name: "Julia Hartmann".into(),
+            role: "Systems & Cloud Engineer".into(),
+            department: "Cloud & Core Systems".into(),
+            skills: vec![
+                "Rust".into(),
+                "Kubernetes".into(),
+                "Docker".into(),
+                "Terraform".into(),
+                "NoSQL".into(),
+            ], // Has Rust + C1 English, missing SQL
+            english_level: "C1".into(),
+            certifications: vec!["Certified Kubernetes Security Specialist (CKS)".into()],
+            current_project: "Cloud Native Mesh".into(),
+            availability_percent: 80,
+            hourly_rate: 138.0,
+            location: "Hamburg".into(),
+        },
+        EmployeeRecord {
+            emp_id: "EMP-1265".into(),
+            name: "David Chen".into(),
+            role: "Senior Data & Analytics Architect".into(),
+            department: "Data & Analytics".into(),
+            skills: vec![
+                "SQL".into(),
+                "PostgreSQL".into(),
+                "Python".into(),
+                "Snowflake".into(),
+                "Kafka".into(),
+            ], // Has SQL + C1 English, missing Rust
+            english_level: "C1".into(),
+            certifications: vec!["Snowflake SnowPro Core".into()],
+            current_project: "Enterprise DWH Modernization".into(),
+            availability_percent: 100,
+            hourly_rate: 140.0,
+            location: "München".into(),
+        },
+    ];
+
+    for emp in curated {
+        if list.len() < count {
+            list.push(emp);
+        }
+    }
+
+    let mut current_full_matches = 4usize;
+    let mut current_near_matches = 5usize;
+
+    let first_names = [
+        "Alexander", "Laura", "Maximilian", "Sophie", "Felix", "Marie", "Paul", "Katharina",
+        "Leon", "Anna", "Lukas", "Lena", "Jonas", "Lea", "Tim", "Jannik", "Jan", "Clara",
+        "Niklas", "Johanna", "Philipp", "Charlotte", "Fabian", "Victoria", "Simon", "Amelie",
+        "Tobias", "Emilia", "Florian", "Miriam", "Sebastian", "Nadine", "Christian", "Melanie",
+        "Daniel", "Sabrina", "Patrick", "Lisa", "Matthias", "Vanessa", "Andreas", "Tanja",
+        "Stefan", "Kristina", "Benjamin", "Franziska", "Dominik", "Anja", "Marcel", "Steffi",
+    ];
+    let last_names = [
+        "Müller", "Meier", "Schulz", "Wagner", "Becker", "Hoffmann", "Schäfer", "Koch",
+        "Bauer", "Richter", "Klein", "Wolf", "Schröder", "Neumann", "Schwarz", "Zimmermann",
+        "Braun", "Krüger", "Hofmann", "Hartmann", "Lange", "Schmitt", "Werner", "Schmitz",
+        "Krause", "Maier", "Lehmann", "Schmid", "Schulze", "Maier", "Köhler", "Herrmann",
+        "König", "Walter", "Mayer", "Huber", "Kaiser", "Fuchs", "Peters", "Lang",
+    ];
+
+    // Full-match templates (100% Match: Rust + SQL + >= B2)
+    let full_match_templates: [(&str, &str, &[&str], &str, &[&str]); 4] = [
+        (
+            "Senior Rust & Distributed Systems Engineer",
+            "Cloud & Core Systems",
+            &["Rust", "SQL", "PostgreSQL", "Kubernetes", "Docker", "gRPC"],
+            "C1",
+            &["ISO/IEC 27001 Foundation", "CKA"],
+        ),
+        (
+            "Backend & Database Platform Engineer",
+            "Core Platform Engineering",
+            &["Rust", "SQL", "SurrealDB", "Kafka", "Linux", "Terraform"],
+            "B2",
+            &["AWS Certified Solutions Architect"],
+        ),
+        (
+            "Automotive Cloud & Telemetry Architect",
+            "Automotive & Embedded Systems",
+            &["Rust", "SQL", "PostgreSQL", "C++", "Docker", "Kafka"],
+            "C1",
+            &["BSI IT-Grundschutz", "ISO/IEC 27001 Foundation"],
+        ),
+        (
+            "Staff Data & Storage Systems Engineer",
+            "Data & Analytics",
+            &["Rust", "SQL", "SurrealDB", "PostgreSQL", "Python", "Kubernetes"],
+            "C2",
+            &["Google Cloud Professional Data Engineer"],
+        ),
+    ];
+
+    // Near-match templates (Missing exactly 1 of Rust, SQL, or >= B2)
+    let near_match_templates: [(&str, &str, &[&str], &str, &[&str]); 3] = [
+        (
+            "Embedded Rust & Database Developer",
+            "Automotive & Embedded Systems",
+            &["Rust", "SQL", "PostgreSQL", "C++", "Linux"],
+            "B1", // Missing only English B2
+            &["BSI IT-Grundschutz"],
+        ),
+        (
+            "Senior SQL & Cloud Data Engineer",
+            "Data & Analytics",
+            &["SQL", "PostgreSQL", "Snowflake", "Python", "Kafka"],
+            "C1", // Missing only Rust
+            &["ISO/IEC 27001 Foundation"],
+        ),
+        (
+            "Cloud Native Rust Microservices Engineer",
+            "Cloud & Core Systems",
+            &["Rust", "NoSQL", "MongoDB", "Redis", "Kubernetes", "Docker"],
+            "B2", // Missing only SQL
+            &["CKA"],
+        ),
+    ];
+
+    // Non-matching role templates (missing 2+ criteria -> deterministically excluded by SQL)
+    let role_templates: [(&str, &str, &[&str], &str, &[&str]); 10] = [
+        (
+            "Frontend & UI Engineer",
+            "Digital Experience",
+            &["TypeScript", "React", "HTML/CSS", "GraphQL", "Cypress"],
+            "B2",
+            &["W3C Accessibility Specialist"],
+        ),
+        (
+            "SAP S/4HANA Consultant",
+            "Enterprise ERP",
+            &["SAP", "ABAP", "Fiori", "HANA", "BTP"],
+            "B2",
+            &["SAP Certified Application Associate"],
+        ),
+        (
+            "Java Enterprise Architect",
+            "Enterprise Backend",
+            &["Java", "Spring Boot", "Kubernetes", "Docker", "Kafka"],
+            "C1",
+            &["Oracle Certified Professional Java SE"],
+        ),
+        (
+            "Machine Learning & AI Engineer",
+            "AI & Data Science",
+            &["Python", "PyTorch", "TensorFlow", "Docker", "MLOps"],
+            "C1",
+            &["TensorFlow Developer Certificate"],
+        ),
+        (
+            "DevOps & Site Reliability Engineer",
+            "Cloud & Infrastructure",
+            &["Terraform", "Kubernetes", "Docker", "Ansible", "GitLab CI"],
+            "B2",
+            &["AWS Certified DevOps Engineer"],
+        ),
+        (
+            "Cybersecurity & GRC Consultant",
+            "Security & Compliance",
+            &["ISO/IEC 27001", "BSI IT-Grundschutz", "SIEM", "Zero Trust", "Linux"],
+            "C1",
+            &["CISSP", "ISO/IEC 27001 Lead Auditor"],
+        ),
+        (
+            "Agile Scrum Master & Product Owner",
+            "Product & Delivery",
+            &["Scrum", "Kanban", "Jira", "Confluence", "SAFe"],
+            "C1",
+            &["Professional Scrum Master (PSM II)"],
+        ),
+        (
+            "iOS & Android Mobile Developer",
+            "Mobile Engineering",
+            &["Swift", "Kotlin", "Flutter", "Firebase", "REST"],
+            "B2",
+            &["Google Associate Android Developer"],
+        ),
+        (
+            "BI & Reporting Specialist",
+            "Data & Analytics",
+            &["PowerBI", "Tableau", "SQL", "Excel", "DAX"],
+            "B1", // Has SQL + B1, missing Rust & B2 (2 gaps -> excluded from 1-gap list)
+            &["Microsoft Certified: Power BI Data Analyst"],
+        ),
+        (
+            "C# / .NET Backend Developer",
+            "Enterprise Backend",
+            &["C#", ".NET Core", "Azure", "Docker", "Microservices"],
+            "B2",
+            &["Microsoft Certified: Azure Developer Associate"],
+        ),
+    ];
+
+    let locations = [
+        "München", "Stuttgart", "Frankfurt", "Berlin", "Hamburg", "Köln", "Düsseldorf", "Nürnberg",
+    ];
+    let active_projects = [
+        "Portal Relaunch 2026",
+        "SAP S/4HANA Rollout",
+        "Cloud Migration Wave 2",
+        "Customer Mobile App",
+        "Zero-Trust Security Audit",
+        "Internal AI Platform",
+    ];
+
+    let mut idx = 1usize;
+    while list.len() < count {
+        let emp_num = 1000 + idx;
+        let emp_id = format!("EMP-{:04}", emp_num);
+        if list.iter().any(|e| e.emp_id == emp_id) {
+            idx += 1;
+            continue;
+        }
+
+        let first_name = first_names[(idx * 7 + idx / 40) % first_names.len()];
+        let last_name = last_names[(idx * 13 + idx / 30) % last_names.len()];
+        let name = format!("{} {}", first_name, last_name);
+
+        // Distribute full matches (~10%) and near matches (~5%) evenly across the ID range
+        let (role, dept, skills_slice, eng, certs_slice) =
+            if idx % 10 == 0 && current_full_matches < target_full_matches {
+                current_full_matches += 1;
+                full_match_templates[current_full_matches % full_match_templates.len()]
+            } else if idx % 20 == 5 && current_near_matches < target_near_matches {
+                current_near_matches += 1;
+                near_match_templates[current_near_matches % near_match_templates.len()]
+            } else if (count - list.len()) <= (target_full_matches.saturating_sub(current_full_matches)) {
+                current_full_matches += 1;
+                full_match_templates[current_full_matches % full_match_templates.len()]
+            } else if (count - list.len())
+                <= (target_full_matches.saturating_sub(current_full_matches)
+                    + target_near_matches.saturating_sub(current_near_matches))
+            {
+                current_near_matches += 1;
+                near_match_templates[current_near_matches % near_match_templates.len()]
+            } else {
+                role_templates[idx % role_templates.len()]
+            };
+
+        let mix = idx + (idx / 10) * 3 + (idx / 20) * 7;
+        let avail: i64 = match mix % 5 {
+            0 => 100,
+            1 => 80,
+            2 => 60,
+            3 => 50,
+            _ => 20,
+        };
+        let rate = 95.0 + ((mix * 11) % 65) as f64;
+        let loc = locations[mix % locations.len()];
+        let proj = if avail >= 100 {
+            "Frei / Bench"
+        } else {
+            active_projects[mix % active_projects.len()]
+        };
+
+        list.push(EmployeeRecord {
+            emp_id,
+            name,
+            role: role.to_string(),
+            department: dept.to_string(),
+            skills: skills_slice.iter().map(|s| s.to_string()).collect(),
+            english_level: eng.to_string(),
+            certifications: certs_slice.iter().map(|s| s.to_string()).collect(),
+            current_project: proj.to_string(),
+            availability_percent: avail,
+            hourly_rate: rate,
+            location: loc.to_string(),
+        });
+
+        idx += 1;
+    }
+
+    list
 }
