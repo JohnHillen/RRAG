@@ -66,6 +66,26 @@ pub struct DocumentItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CrmEmployeeItem {
+    pub emp_id: String,
+    pub name: String,
+    pub role: String,
+    pub department: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    pub english_level: String,
+    #[serde(default)]
+    pub certifications: Vec<String>,
+    pub current_project: String,
+    #[serde(default)]
+    pub availability_percent: i64,
+    #[serde(default)]
+    pub hourly_rate: f64,
+    #[serde(default)]
+    pub location: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttachedChatDoc {
     pub filename: String,
     pub text: String,
@@ -969,6 +989,9 @@ fn App() -> impl IntoView {
     let (replace_revision, set_replace_revision) = create_signal(true);
     let (extract_graph, set_extract_graph) = create_signal(false);
     let (stored_docs, set_stored_docs) = create_signal(Vec::<DocumentItem>::new());
+    let (crm_employees, set_crm_employees) = create_signal(Vec::<CrmEmployeeItem>::new());
+    let (crm_search_term, set_crm_search_term) = create_signal(String::new());
+    let (is_seeding_crm, set_is_seeding_crm) = create_signal(false);
 
     let (doc_title, set_doc_title) = create_signal(String::new());
     let (doc_text, set_doc_text) = create_signal(String::new());
@@ -984,6 +1007,19 @@ fn App() -> impl IntoView {
                     let list: Vec<DocumentItem> =
                         serde_json::from_value(json["documents"].clone()).unwrap_or_default();
                     set_stored_docs.set(list);
+                }
+            }
+        });
+    };
+
+    // Lädt alle strukturierten Mitarbeiter-Datensätze aus SurrealDB (`GET /v1/crm/employees`)
+    let refresh_crm_employees = move || {
+        spawn_local(async move {
+            if let Ok(resp) = Request::get("/v1/crm/employees").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let list: Vec<CrmEmployeeItem> =
+                        serde_json::from_value(json["employees"].clone()).unwrap_or_default();
+                    set_crm_employees.set(list);
                 }
             }
         });
@@ -1069,6 +1105,7 @@ fn App() -> impl IntoView {
 
     create_effect(move |_| {
         load_llm_config();
+        refresh_crm_employees();
     });
 
     // --- Handler: Dateiauswahl (Dateien oder ganzer Ordner) geändert ---
@@ -1703,9 +1740,18 @@ fn App() -> impl IntoView {
                                                 let err = event["error"]
                                                     .as_str()
                                                     .unwrap_or("Unbekannter Fehler");
-                                                assistant_content
-                                                    .set(format!("❌ Fehler: {}", err));
-                                                first_token = false;
+                                                if first_token {
+                                                    assistant_content
+                                                        .set(format!("❌ Fehler: {}", err));
+                                                    first_token = false;
+                                                } else {
+                                                    assistant_content.update(|c| {
+                                                        c.push_str(&format!(
+                                                            "\n\n---\n❌ **Stream-Fehler:** {}",
+                                                            err
+                                                        ));
+                                                    });
+                                                }
                                             }
                                             _ => {}
                                         }
@@ -2101,11 +2147,26 @@ fn App() -> impl IntoView {
                                 set_ingest_status.set(String::new());
                                 set_modal_tab.set("docs".to_string());
                                 refresh_documents();
+                                refresh_crm_employees();
                                 set_show_ingest_modal.set(true);
                             }
                         >
                             <span>"🗂️"</span>
                             <span class="icon-caption">{move || if is_en() { "Docs" } else { "Dokumente" }}</span>
+                        </button>
+
+                        <button
+                            class="sidebar-icon-btn"
+                            title=move || if is_en() { "Structured CRM / HR Employee Database (300+ SQL Records)" } else { "Strukturierte CRM / HR Mitarbeiter-Datenbank (300+ SQL-Datensätze)" }
+                            on:click=move |_| {
+                                set_ingest_status.set(String::new());
+                                set_modal_tab.set("crm".to_string());
+                                refresh_crm_employees();
+                                set_show_ingest_modal.set(true);
+                            }
+                        >
+                            <span>"🏢"</span>
+                            <span class="icon-caption">"CRM/DB"</span>
                         </button>
 
                         <button
@@ -2489,11 +2550,11 @@ fn App() -> impl IntoView {
             // --- Modal-Dialog für Wissen einspeisen & Multi-File Upload ---
             {move || show_ingest_modal.get().then(|| {
                 let is_fs = is_modal_fullscreen.get();
-                let is_docs_tab = modal_tab.get() == "docs";
+                let is_wide_tab = modal_tab.get() == "docs" || modal_tab.get() == "crm";
                 let backdrop_class = if is_fs { "modal-backdrop fullscreen" } else { "modal-backdrop" };
                 let dialog_class = if is_fs {
                     "modal-dialog fullscreen"
-                } else if is_docs_tab {
+                } else if is_wide_tab {
                     "modal-dialog wide"
                 } else {
                     "modal-dialog"
@@ -2509,6 +2570,12 @@ fn App() -> impl IntoView {
                                             "🗂️ Stored Documents & Knowledge Base"
                                         } else {
                                             "🗂️ Gespeicherte Dokumente & Wissensbasis"
+                                        }
+                                    } else if modal_tab.get() == "crm" {
+                                        if is_en() {
+                                            "🏢 Enterprise CRM / HR Employee Database (Relational SQL + Hybrid RAG)"
+                                        } else {
+                                            "🏢 Enterprise CRM / HR Mitarbeiter-Datenbank (Relationale SQL + Hybrid RAG)"
                                         }
                                     } else if is_en() {
                                         "📚 Ingest Knowledge into SurrealDB"
@@ -2566,6 +2633,19 @@ fn App() -> impl IntoView {
                                     format!("🗂️ Stored Documents ({})", stored_docs.get().len())
                                 } else {
                                     format!("🗂️ Gespeicherte Dokumente ({})", stored_docs.get().len())
+                                }}
+                            </button>
+                            <button
+                                class=move || if modal_tab.get() == "crm" { "tab-btn active" } else { "tab-btn" }
+                                on:click=move |_| {
+                                    refresh_crm_employees();
+                                    set_modal_tab.set("crm".to_string());
+                                }
+                            >
+                                {move || if is_en() {
+                                    format!("🏢 CRM / HR DB ({})", crm_employees.get().len())
+                                } else {
+                                    format!("🏢 CRM / HR DB ({})", crm_employees.get().len())
                                 }}
                             </button>
                         </div>
@@ -2794,7 +2874,7 @@ fn App() -> impl IntoView {
                                         </button>
                                     </div>
                                 }.into_view()
-                            } else {
+                            } else if modal_tab.get() == "docs" {
                                 // Tab "docs" -> Strukturierte Dokumentenanzeige
                                 view! {
                                     <div style="display:flex; flex-direction:column; gap:1rem; height:100%;">
@@ -3165,6 +3245,311 @@ fn App() -> impl IntoView {
                                         }}
                                     </div>
                                 }.into_view()
+                            } else if modal_tab.get() == "crm" {
+                                // Tab "crm" -> Enterprise CRM / HR Relationale Mitarbeiter-Datenbank (`employee_record` in SurrealDB)
+                                view! {
+                                    <div style="display:flex; flex-direction:column; gap:1rem; height:100%;">
+                                        // 1. Architektur-Hinweis & Aktionsleiste (300 Mitarbeiter generieren / DB leeren)
+                                        <div style="background:rgba(15, 23, 42, 0.75); border:1px solid #334155; border-radius:0.65rem; padding:0.85rem 1rem; display:flex; flex-direction:column; gap:0.65rem;">
+                                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem;">
+                                                <div style="display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;">
+                                                    <span style="background:rgba(99, 102, 241, 0.2); border:1px solid #6366f1; color:#e0e7ff; padding:0.28rem 0.7rem; border-radius:999px; font-size:0.8rem; font-weight:700;">
+                                                        {move || if is_en() {
+                                                            format!("🗄️ {} Employee Records in SurrealDB", crm_employees.get().len())
+                                                        } else {
+                                                            format!("🗄️ {} Mitarbeiter-Datensätze in SurrealDB", crm_employees.get().len())
+                                                        }}
+                                                    </span>
+                                                    <span style="font-size:0.76rem; color:#38bdf8;">
+                                                        {move || if is_en() {
+                                                            "100% SQL/SurrealQL Recall (no Top-K vector loss) + 1-Skill Training Gap Analysis"
+                                                        } else {
+                                                            "100% SQL/SurrealQL-Abdeckung (kein Top-K Vektor-Verlust) + automatische Weiterbildungs-Gap-Analyse"
+                                                        }}
+                                                    </span>
+                                                </div>
+
+                                                <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                                                    <button
+                                                        class="btn"
+                                                        style="padding:0.4rem 0.75rem; font-size:0.76rem; background:linear-gradient(135deg, #10b981 0%, #059669 100%);"
+                                                        disabled=move || is_seeding_crm.get()
+                                                        on:click=move |_| {
+                                                            set_is_seeding_crm.set(true);
+                                                            set_ingest_status.set(if is_en() {
+                                                                "⏳ Seeding 300 employee records (30 full matches, 15 near-matches)...".to_string()
+                                                            } else {
+                                                                "⏳ Generiere 300 Mitarbeiter-Datensätze (30 Volltreffer, 15 Weiterbildungskandidaten)...".to_string()
+                                                            });
+                                                            spawn_local(async move {
+                                                                let payload = serde_json::json!({ "count": 300 });
+                                                                match Request::post("/v1/crm/seed")
+                                                                    .header("Content-Type", "application/json")
+                                                                    .body(payload.to_string())
+                                                                    .unwrap()
+                                                                    .send()
+                                                                    .await
+                                                                {
+                                                                    Ok(resp) if resp.ok() => {
+                                                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                                                            let cnt = json["count"].as_u64().unwrap_or(300);
+                                                                            set_ingest_status.set(if is_en() {
+                                                                                format!("✅ {} structured employees (incl. 30 full matches & 15 training candidates) seeded into SurrealDB!", cnt)
+                                                                            } else {
+                                                                                format!("✅ {} strukturierte Mitarbeiter (davon 30 Volltreffer & 15 Weiterbildungskandidaten) in SurrealDB angelegt!", cnt)
+                                                                            });
+                                                                            refresh_crm_employees();
+                                                                        }
+                                                                    }
+                                                                    _ => {
+                                                                        set_ingest_status.set("❌ Fehler beim Generieren der CRM-Demo-Datenbank.".to_string());
+                                                                    }
+                                                                }
+                                                                set_is_seeding_crm.set(false);
+                                                            });
+                                                        }
+                                                    >
+                                                        {move || if is_seeding_crm.get() {
+                                                            if is_en() { "⏳ Seeding..." } else { "⏳ Generiere..." }
+                                                        } else if is_en() {
+                                                            "⚡ Seed 300 (30 Matches)"
+                                                        } else {
+                                                            "⚡ 300 Mitarbeiter (30 Treffer)"
+                                                        }}
+                                                    </button>
+
+                                                    <button
+                                                        class="btn"
+                                                        style="padding:0.4rem 0.75rem; font-size:0.76rem; background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%);"
+                                                        disabled=move || is_seeding_crm.get()
+                                                        on:click=move |_| {
+                                                            set_is_seeding_crm.set(true);
+                                                            set_ingest_status.set(if is_en() {
+                                                                "⏳ Seeding 3,000 employee records for Stress-Test (300 full matches, 150 near-matches)...".to_string()
+                                                            } else {
+                                                                "⏳ Generiere 3.000 Mitarbeiter für Performance- & Stress-Test (300 Volltreffer, 150 Weiterbildungskandidaten)...".to_string()
+                                                            });
+                                                            spawn_local(async move {
+                                                                let payload = serde_json::json!({ "count": 3000 });
+                                                                match Request::post("/v1/crm/seed")
+                                                                    .header("Content-Type", "application/json")
+                                                                    .body(payload.to_string())
+                                                                    .unwrap()
+                                                                    .send()
+                                                                    .await
+                                                                {
+                                                                    Ok(resp) if resp.ok() => {
+                                                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                                                            let cnt = json["count"].as_u64().unwrap_or(3000);
+                                                                            set_ingest_status.set(if is_en() {
+                                                                                format!("🔥 Stress-Test ready: {} structured employees (300 full matches & 150 training candidates) seeded into SurrealDB!", cnt)
+                                                                            } else {
+                                                                                format!("🔥 Stress-Test bereit: {} strukturierte Mitarbeiter (300 Volltreffer & 150 Weiterbildungskandidaten) in SurrealDB angelegt!", cnt)
+                                                                            });
+                                                                            refresh_crm_employees();
+                                                                        }
+                                                                    }
+                                                                    _ => {
+                                                                        set_ingest_status.set("❌ Fehler beim Generieren der 3.000er Stress-Test-Datenbank.".to_string());
+                                                                    }
+                                                                }
+                                                                set_is_seeding_crm.set(false);
+                                                            });
+                                                        }
+                                                    >
+                                                        {move || if is_seeding_crm.get() {
+                                                            if is_en() { "⏳ Seeding..." } else { "⏳ Generiere..." }
+                                                        } else if is_en() {
+                                                            "🔥 Seed 3,000 (300 Matches)"
+                                                        } else {
+                                                            "🔥 3.000 Mitarbeiter (300 Treffer)"
+                                                        }}
+                                                    </button>
+
+                                                    <button
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.4rem 0.7rem; font-size:0.78rem; color:#fca5a5; border-color:#7f1d1d;"
+                                                        on:click=move |_| {
+                                                            spawn_local(async move {
+                                                                if let Ok(resp) = Request::delete("/v1/crm/employees").send().await {
+                                                                    if resp.ok() {
+                                                                        set_ingest_status.set(if is_en() {
+                                                                            "🗑️ Structured CRM/HR employee table cleared.".to_string()
+                                                                        } else {
+                                                                            "🗑️ Strukturierte CRM/HR-Mitarbeitertabelle geleert.".to_string()
+                                                                        });
+                                                                        refresh_crm_employees();
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    >
+                                                        {move || if is_en() { "🗑️ Clear DB" } else { "🗑️ DB leeren" }}
+                                                    </button>
+
+                                                    <button
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.4rem 0.7rem; font-size:0.78rem;"
+                                                        on:click=move |_| refresh_crm_employees()
+                                                    >
+                                                        {move || if is_en() { "🔄 Refresh" } else { "🔄 Aktualisieren" }}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div style="font-size:0.76rem; color:#94a3b8; line-height:1.45;">
+                                                {move || if is_en() {
+                                                    "💡 Hybrid Enterprise Architecture: Unstructured customer contracts & SLAs (e.g. BMW AG) are retrieved via Vector/BM25 (Hop 1), and their extracted mandatory requirements (e.g. Rust, SQL, English >= B2) are automatically executed as a deterministic SQL query across all 300+ structured employee records (Hop 2)."
+                                                } else {
+                                                    "💡 Hybride Enterprise-Architektur: Unstrukturierte Kundenverträge & SLAs (z.B. BMW AG) werden per Vektor/BM25 gelesen (Hop 1) und deren Pflichtkriterien (z.B. Rust, SQL, Englisch >= B2) automatisch als deterministische SQL-Abfrage gegen alle 300+ Mitarbeiter-Datensätze ausgeführt (Hop 2)."
+                                                }}
+                                            </div>
+                                        </div>
+
+                                        // 2. Suchfeld für Mitarbeiter (Name, ID, Skill, Englisch-Level, Abteilung, Standort)
+                                        <input
+                                            class="docs-search-input"
+                                            type="text"
+                                            placeholder=move || if is_en() {
+                                                "🔍 Filter 300+ employees by name, ID (EMP-1042), skill (Rust, SQL), English (B2, C1), role, or city..."
+                                            } else {
+                                                "🔍 300+ Mitarbeiter nach Name, ID (EMP-1042), Skill (Rust, SQL), Englisch (B2, C1), Rolle oder Standort filtern..."
+                                            }
+                                            prop:value=move || crm_search_term.get()
+                                            on:input=move |ev| set_crm_search_term.set(event_target_value(&ev))
+                                        />
+
+                                        // 3. Mitarbeiter-Tabelle / Grid
+                                        {move || {
+                                            let all_emps = crm_employees.get();
+                                            if all_emps.is_empty() {
+                                                view! {
+                                                    <div style="padding:2.5rem; text-align:center; color:#64748b; border:1px dashed #334155; border-radius:8px;">
+                                                        <div style="font-size:2rem; margin-bottom:0.5rem;">"🏢"</div>
+                                                        <strong style="display:block; color:#94a3b8; font-size:0.95rem;">
+                                                            {move || if is_en() {
+                                                                "No structured employee records in SurrealDB (`employee_record`) yet."
+                                                            } else {
+                                                                "Noch keine strukturierten Mitarbeiter-Datensätze in SurrealDB (`employee_record`)."
+                                                            }}
+                                                        </strong>
+                                                        <span style="font-size:0.8rem; color:#64748b;">
+                                                            {move || if is_en() {
+                                                                "Click '⚡ Seed 300 Demo Employees' above to populate the relational HR/CRM table."
+                                                            } else {
+                                                                "Klicke oben auf '⚡ 300 Mitarbeiter generieren (Demo-DB)', um die relationale HR/CRM-Tabelle zu befüllen."
+                                                            }}
+                                                        </span>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                let q = crm_search_term.get().trim().to_lowercase();
+                                                let filtered: Vec<CrmEmployeeItem> = all_emps
+                                                    .into_iter()
+                                                    .filter(|e| {
+                                                        if q.is_empty() {
+                                                            return true;
+                                                        }
+                                                        e.emp_id.to_lowercase().contains(&q)
+                                                            || e.name.to_lowercase().contains(&q)
+                                                            || e.role.to_lowercase().contains(&q)
+                                                            || e.department.to_lowercase().contains(&q)
+                                                            || e.english_level.to_lowercase().contains(&q)
+                                                            || e.location.to_lowercase().contains(&q)
+                                                            || e.current_project.to_lowercase().contains(&q)
+                                                            || e.skills.iter().any(|s| s.to_lowercase().contains(&q))
+                                                            || e.certifications.iter().any(|c| c.to_lowercase().contains(&q))
+                                                    })
+                                                    .collect();
+
+                                                let total_filtered = filtered.len();
+                                                let bmw_matches_in_filtered = filtered
+                                                    .iter()
+                                                    .filter(|emp| {
+                                                        emp.skills.iter().any(|s| s.eq_ignore_ascii_case("rust"))
+                                                            && emp.skills.iter().any(|s| s.eq_ignore_ascii_case("sql"))
+                                                            && matches!(emp.english_level.as_str(), "B2" | "C1" | "C2")
+                                                    })
+                                                    .count();
+
+                                                view! {
+                                                    <div style="display:flex; flex-direction:column; gap:0.55rem; max-height:460px; overflow-y:auto; padding-right:0.25rem;">
+                                                        <div style="font-size:0.75rem; color:#94a3b8; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                                                            <span>
+                                                                {if is_en() {
+                                                                    if total_filtered > 100 {
+                                                                        format!("Showing first 100 of {} matching employee records (use search bar above to narrow down)", total_filtered)
+                                                                    } else {
+                                                                        format!("Showing {} matching employee record(s)", total_filtered)
+                                                                    }
+                                                                } else if total_filtered > 100 {
+                                                                    format!("Zeige die ersten 100 von {} passenden Mitarbeitern (nutze das Suchfeld oben zum Filtern)", total_filtered)
+                                                                } else {
+                                                                    format!("Zeige {} passende Mitarbeiter-Datensätze", total_filtered)
+                                                                }}
+                                                            </span>
+                                                            <span style="color:#34d399; font-weight:600;">
+                                                                {format!("✅ {} Volltreffer (Rust + SQL + >=B2) in dieser Auswahl", bmw_matches_in_filtered)}
+                                                            </span>
+                                                        </div>
+                                                        {filtered.into_iter().take(100).map(|emp| {
+                                                            let has_rust = emp.skills.iter().any(|s| s.eq_ignore_ascii_case("rust"));
+                                                            let has_sql = emp.skills.iter().any(|s| s.eq_ignore_ascii_case("sql"));
+                                                            let is_b2_plus = matches!(emp.english_level.as_str(), "B2" | "C1" | "C2");
+                                                            let is_bmw_full_match = has_rust && has_sql && is_b2_plus;
+                                                            let border_style = if is_bmw_full_match {
+                                                                "background:rgba(16, 185, 129, 0.07); border:1px solid rgba(16, 185, 129, 0.45); border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap;"
+                                                            } else {
+                                                                "background:rgba(15, 23, 42, 0.6); border:1px solid #334155; border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap;"
+                                                            };
+                                                            view! {
+                                                                <div style=border_style>
+                                                                    <div style="display:flex; flex-direction:column; gap:0.25rem; min-width:220px; flex:1;">
+                                                                        <div style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap;">
+                                                                            <span style="font-family:monospace; font-size:0.73rem; background:#1e293b; color:#38bdf8; padding:0.1rem 0.4rem; border-radius:4px; border:1px solid #334155;">
+                                                                                {emp.emp_id}
+                                                                            </span>
+                                                                            <strong style="color:#f8fafc; font-size:0.88rem;">{emp.name}</strong>
+                                                                            <span style="font-size:0.76rem; color:#94a3b8;">"· " {emp.role}</span>
+                                                                            {is_bmw_full_match.then(|| view! {
+                                                                                <span style="font-size:0.68rem; background:rgba(16,185,129,0.2); color:#34d399; border:1px solid rgba(16,185,129,0.4); padding:0.08rem 0.4rem; border-radius:999px; font-weight:600;">
+                                                                                    "✅ Rust + SQL + >=B2"
+                                                                                </span>
+                                                                            })}
+                                                                        </div>
+                                                                        <div style="font-size:0.74rem; color:#64748b; display:flex; gap:0.6rem; flex-wrap:wrap;">
+                                                                            <span>"🏢 " {emp.department}</span>
+                                                                            <span>"📍 " {emp.location}</span>
+                                                                            <span>"📂 " {emp.current_project}</span>
+                                                                            <span>{format!("💶 {:.0} €/h · ⏱️ {}% frei", emp.hourly_rate, emp.availability_percent)}</span>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div style="display:flex; align-items:center; gap:0.35rem; flex-wrap:wrap;">
+                                                                        {emp.skills.into_iter().map(|sk| {
+                                                                            let is_key = sk.eq_ignore_ascii_case("rust") || sk.eq_ignore_ascii_case("sql");
+                                                                            let pill_style = if is_key {
+                                                                                "font-size:0.7rem; background:rgba(99,102,241,0.22); color:#c7d2fe; border:1px solid #6366f1; padding:0.12rem 0.45rem; border-radius:4px; font-weight:600;"
+                                                                            } else {
+                                                                                "font-size:0.7rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; padding:0.12rem 0.45rem; border-radius:4px;"
+                                                                            };
+                                                                            view! { <span style=pill_style>{sk}</span> }
+                                                                        }).collect_view()}
+                                                                        <span style="font-size:0.72rem; background:#1e1b4b; color:#a5b4fc; border:1px solid #4338ca; padding:0.12rem 0.48rem; border-radius:4px; font-weight:700;">
+                                                                            {format!("🇬🇧 {}", emp.english_level)}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }.into_view()
+                                            }
+                                        }}
+                                    </div>
+                                }.into_view()
+                            } else {
+                                view! { <div></div> }.into_view()
                             }}
 
                             {move || (!ingest_status.get().is_empty()).then(|| view! {
