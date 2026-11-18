@@ -1,0 +1,80 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1703 >>
+stream
+BT
+/F1 16 Tf
+45 775 Td
+(Interne Fuhrpark-, Inspektions- und Telemetrie-Richtlinie 2026) Tj
+/F2 10 Tf
+0 -24 Td
+0 -8 Td
+/F1 12 Tf
+(1. Inspektions-Intervalle & Werkstatt-Sperrgrenzen) Tj
+/F2 10 Tf
+0 -15 Td
+(Alle schweren Nutzfahrzeuge \(LKW-01 bis LKW-12\) senden Live-CAN-Bus-Telemetrie in die SurrealDB.) Tj
+0 -13 Td
+(  * Regulaeres Inspektionsintervall: Alle 50.000 km oder spaetestens am hinterlegten Pruefdatum.) Tj
+0 -13 Td
+(  * WARNSTUFE GELB \(Vorwarnung\): Reststrecke bis Inspektion < 2.500 km -> Nur noch Kurztouren \(< 350 km\).) Tj
+0 -13 Td
+(  * SPERRSTUFE ROT \(Werkstatt-Pflicht\): Reststrecke bis Inspektion < 500 km oder Pruefdatum ueberschritten) Tj
+0 -13 Td
+(    -> Fahrzeug darf KEINE neue Kundentour starten und muss sofort in die Zentralwerkstatt!) Tj
+0 -13 Td
+0 -8 Td
+/F1 12 Tf
+(2. Grenzwerte fuer Oelstand, AdBlue, Bremsen & Reifendruck) Tj
+/F2 10 Tf
+0 -15 Td
+(  * Motor-Oelstand \(oil_level_percent\):) Tj
+0 -13 Td
+(    - 65% bis 100%: Optimaler Betriebsbereich \(Gruen\)) Tj
+0 -13 Td
+(    - 45% bis 64% : Nachfuellen beim naechsten Depot-Stopp erforderlich \(Gelb\)) Tj
+0 -13 Td
+(    - Unter 45%   : KRITISCHER OELSTAND \(Rot\) -> Akute Motorschadensgefahr, sofortiger Nachfuell-Stopp!) Tj
+0 -13 Td
+(  * Bremsverschleiss \(brake_wear_percent\):) Tj
+0 -13 Td
+(    - Ab 75% Verschleiss: Bremsbelagwechsel bei naechster Inspektion einplanen) Tj
+0 -13 Td
+(    - Ab 85% Verschleiss: KRITISCH -> Sofortiger Bremsenservice vor naechster Fahrt!) Tj
+0 -13 Td
+(  * Reifendruck \(tire_pressure_bar\): Sollwert 8.5 bar \(Kritisch unter 7.5 bar -> Reifenschaden-Risiko\)) Tj
+0 -13 Td
+(  * AdBlue-Stand \(adblue_level_percent\): Warnung unter 20% \(Leistungsreduzierung droht\)) Tj
+0 -13 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001763 00000 n 
+0000001865 00000 n 
+0000001962 00000 n 
+0000002098 00000 n 
+0000002155 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+2204
+%%EOF

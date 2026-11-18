@@ -1,0 +1,103 @@
+%PDF-1.4
+1 0 obj
+<< /Length 3326 >>
+stream
+BT
+/F1 15 Tf
+45 785 Td
+(Qualitaets- und Revisionsbericht Logistik: Maerz & April 2026) Tj
+/F2 9.5 Tf
+0 -20 Td
+/F1 11.5 Tf
+(1. Zusammenfassung der Zweimonats-Periode \(Maerz & April 2026\)) Tj
+/F2 9.5 Tf
+0 -14 Td
+(Im Zeitraum 01.03.2026 bis 30.04.2026 wurden alle Fernverkehrs- und Regionallieferungen) Tj
+0 -12.5 Td
+(per hochfrequenter 1-Hz GPS-Telemetrie \(Sekunden-Takt\), GNSS-Satellitenanalyse \(HDOP/Fix-Typ\),) Tj
+0 -12.5 Td
+(Live-Wettersensorik und Temperatursensorik in der SurrealDB \(Tabelle fleet_tour\) aufgezeichnet.) Tj
+0 -12.5 Td
+(Schwerpunkt-Zielregion im April 2026 war das City-Hub Berlin-Westhafen \(WH-BER-05\).) Tj
+0 -12.5 Td
+0 -6 Td
+/F1 11.5 Tf
+(2. Dokumentierte Sondervorfaelle & Technische Auffaelligkeiten im April 2026) Tj
+/F2 9.5 Tf
+0 -14 Td
+(  * Vorfall #APR-01 \(Kuehlketten-Warnung & 1-Hz Unwetter-Drift auf TOUR-2026-0412 am 14.04.2026\):) Tj
+0 -12.5 Td
+(    - Fahrzeug: LKW-04 \(Mercedes Actros, F-TH-4014, Fahrer: Viktor Makarov\)) Tj
+0 -12.5 Td
+(    - Route: Frankfurt-Sued \(WH-FRA-03\) -> Berlin-Westhafen \(WH-BER-05\) fuer BioPharma Berlin GmbH) Tj
+0 -12.5 Td
+(    - 1-Hz GNSS & Wetter \(07:55:01-07:55:06 Uhr, A7 Kasseler Berge\): Schweres Gewitter & Starkregen) Tj
+0 -12.5 Td
+(      \(52.0 mm/h Niederschlag, 74 km/h Wind\). Satellitenanzahl fiel auf 2-3 Satelliten \(< 4 Sat. Limit\),) Tj
+0 -12.5 Td
+(      HDOP stieg auf 7.9, GPS-Genauigkeit litt massiv mit +-68.5 m Spur-Drift neben die Fahrbahn.) Tj
+0 -12.5 Td
+(    - Kuehlketten-Befund \(12:10:01-12:10:03 Uhr, A2 Magdeburg\): Bei +26.5 Grad C Aussentemperatur im Stau) Tj
+0 -12.5 Td
+(      und defektem Thermostatventil stieg die Kuehltemperatur auf -14.2 Grad C \(SLA-Verstoss!\). Oelstand: 38%.) Tj
+0 -12.5 Td
+(  * Vorfall #APR-02 \(Kritischer Verschleiss, Orkanboeen & Elbtunnel-Blackout bei LKW-07, TOUR-2026-0415\):) Tj
+0 -12.5 Td
+(    - Fahrzeug: LKW-07 \(MAN TGX 18.510, HH-LG-2077, Fahrer: Murat Demir, Muenchen -> Hamburg am 16.04.2026\)) Tj
+0 -12.5 Td
+(    - 1-Hz GNSS & Wetter \(13:20:01-13:20:05 Uhr\): Sturmboeen \(84 km/h\) & Starkregen \(31 mm/h\) auf der) Tj
+0 -12.5 Td
+(      Elbbruecke, danach im Elbtunnel Hamburg totaler GNSS-Ausfall \(0 Satelliten, HDOP 99.9, No-Fix /) Tj
+0 -12.5 Td
+(      IMU-Koppelnavigation mit +-118.5 m Ungenauigkeit\).) Tj
+0 -12.5 Td
+(    - Verschleiss-Befund: Tachostand 249.820 km \(Inspektion bei 250.000 km -> nur 180 km Rest!\),) Tj
+0 -12.5 Td
+(      Oelstand 34% \(KRITISCH\), Bremsverschleiss 88%. LKW-07 wurde sofort gesperrt.) Tj
+0 -12.5 Td
+(  * Vorfall #APR-03 \(1-Hz Multipath-Reflexion & Starkregen bei LKW-02, TOUR-2026-0405 am 09.04.2026\):) Tj
+0 -12.5 Td
+(    - Fahrzeug: LKW-02 \(Scania R 450, HH-LG-2042, Fahrer: Stefan Lindemann, Hamburg -> Berlin\)) Tj
+0 -12.5 Td
+(    - Befund: Dichter Nebel auf der A24, danach um 10:30:01-10:30:04 Uhr im City-Hub Berlin-Westhafen) Tj
+0 -12.5 Td
+(      unter Stahl-Containerbruecken bei Starkregen \(25 mm/h\) Abfall auf 3 Satelliten \(HDOP 5.9, +-48.5 m\).) Tj
+0 -12.5 Td
+(  * Vorbildliche Berlin-Lieferungen im April 2026 \(3D-Fix stabil mit 11-14 Satelliten, +-1.4 m\):) Tj
+0 -12.5 Td
+(    - LKW-01 \(M-SP-4011, Andreas Kowalski\) und LKW-09 \(B-TR-9019, Elena Berger\) absolvierten alle) Tj
+0 -12.5 Td
+(      April-Touren nach Berlin \(WH-BER-05\) fuer BioPharma Berlin & Charite puenktlich und SLA-konform.) Tj
+0 -12.5 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000003386 00000 n 
+0000003488 00000 n 
+0000003585 00000 n 
+0000003721 00000 n 
+0000003778 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+3827
+%%EOF

@@ -1,0 +1,101 @@
+%PDF-1.4
+1 0 obj
+<< /Length 2184 >>
+stream
+BT
+/F1 15 Tf
+45 775 Td
+(Gewerbe-Mietvertrag & Gefahrgut-Auflagen: Fulfillment-Lager Hamburg-Billbrook \(WH-HAM\)) Tj
+/F2 10 Tf
+0 -22 Td
+0 -6 Td
+/F1 11 Tf
+(1. Mietobjekt & Vertragspartner) Tj
+/F2 10 Tf
+0 -14 Td
+(Vermieter: HanseLogistik Immobilien AG, Borsigstrasse 18, 22113 Hamburg) Tj
+0 -13 Td
+(Mieter: HanseTech Smart-Living Webstore GmbH) Tj
+0 -13 Td
+(Vertragsnummer: LEASE-WH-HAM-2026) Tj
+0 -13 Td
+(Lager-Standortkennung in der Datenbank \(warehouse_location\): 'Hamburg-Billbrook) Tj
+0 -13 Td
+(\(WH-HAM\)') Tj
+0 -13 Td
+(Nutzungszweck: Haupt-Fulfillment-Lager fuer Audio, Home-Office & Elektronik-Versand) Tj
+0 -13 Td
+0 -8 Td
+0 -6 Td
+/F1 11 Tf
+(2. Mietzins & Paletten-Kontingent \(Maximal 120 Paletten inklusive\)) Tj
+/F2 10 Tf
+0 -14 Td
+(* Monatliche Nettokaltmiete \(Grundmiete\): 4200.00 EUR pro Monat.) Tj
+0 -13 Td
+(* Inkludiertes Lager-Kontingent: Bis zu 120 belegten Europaletten-Stellplaetzen) Tj
+0 -13 Td
+(\(occupied_pallets\).) Tj
+0 -13 Td
+(* ZUSATZMIETE BEI UEBERBELEGUNG \(> 120 Paletten\):) Tj
+0 -13 Td
+(Fuer jede belegte Palette ueber dem Inklusiv-Kontingent von 120 Paletten berechnet der) Tj
+0 -13 Td
+(Vermieter einen Ueberbelegungs-Zuschlag von 25.00 EUR pro Zusatzpalette und Monat.) Tj
+0 -13 Td
+(Formel Zusatzmiete Hamburg = \(Summe occupied_pallets in WH-HAM - 120\) * 25.00 EUR.) Tj
+0 -13 Td
+0 -8 Td
+0 -6 Td
+/F1 11 Tf
+(3. Brandschutz- & Lithium-Ionen-Akku-Auflage \(Maximal 600 Akku-Einheiten!\)) Tj
+/F2 10 Tf
+0 -14 Td
+(* WICHTIGE VERSICHERUNGS-AUFLAGE: Da Halle B in Hamburg-Billbrook keine automatische) Tj
+0 -13 Td
+(Argon-Loeschanlage besitzt, duerfen im Lager 'Hamburg-Billbrook \(WH-HAM\)' zu keinem) Tj
+0 -13 Td
+(Zeitpunkt mehr als 600 Artikel-Einheiten \(stock_units\) gelagert werden, die einen) Tj
+0 -13 Td
+(Lithium-Ionen-Akku enthalten \(contains_lithium_battery = true\).) Tj
+0 -13 Td
+(* Bei Ueberschreitung des Limits von 600 Lithium-Akku-Einheiten in Hamburg droht eine) Tj
+0 -13 Td
+(sofortige Brandschutz-Vertragsstrafe von 5000.00 EUR durch den Sachversicherer, sofern) Tj
+0 -13 Td
+(die ueberzaehligen Akku-Artikel nicht unverzueglich in das zertifizierte) Tj
+0 -13 Td
+(Gefahrgut-Lager Muenchen-Ost \(WH-MUC\) umgelagert werden.) Tj
+0 -13 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 595 842] /Contents 1 0 R /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000002244 00000 n 
+0000002319 00000 n 
+0000002389 00000 n 
+0000002525 00000 n 
+0000002582 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+2631
+%%EOF

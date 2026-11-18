@@ -12,9 +12,9 @@ logs/
 .pids/
 *.log
 
-# Documents / PDFs (keep showcase_documents in Git)
+# Documents / PDFs (keep Showcase documents in Git)
 *.pdf
-!showcase_documents/**/*.pdf
+!Showcase/**/documents/**/*.pdf
 
 # IDE settings
 .vscode/

@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, fs};
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -7,6 +7,12 @@ pub struct AppConfig {
     pub surreal_pass: String,
     pub surreal_ns: String,
     pub surreal_db: String,
+    pub external_surreal_url: Option<String>,
+    pub external_surreal_user: String,
+    pub external_surreal_pass: String,
+    pub external_surreal_ns: String,
+    pub external_surreal_db: String,
+    pub external_db_schema_prompt: Option<String>,
     pub tei_embed_url: String,
     pub tei_rerank_url: String,
     pub tei_rerank_fast_url: String,
@@ -25,6 +31,18 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Self {
+        let external_surreal_url = env::var("EXTERNAL_SURREAL_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let external_db_schema_prompt = env::var("EXTERNAL_DB_SCHEMA_FILE")
+            .ok()
+            .and_then(|path| fs::read_to_string(path.trim()).ok())
+            .or_else(|| env::var("EXTERNAL_DB_SCHEMA_PROMPT").ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Self {
             surreal_url: env::var("SURREAL_URL").unwrap_or_else(|_| "http://localhost:8000".into()),
             surreal_user: env::var("SURREAL_USER").unwrap_or_else(|_| "root".into()),
@@ -32,6 +50,16 @@ impl AppConfig {
                 .unwrap_or_else(|_| "root_secret_password_change_me".into()),
             surreal_ns: env::var("SURREAL_NS").unwrap_or_else(|_| "rag_namespace".into()),
             surreal_db: env::var("SURREAL_DB").unwrap_or_else(|_| "knowledge_base".into()),
+            external_surreal_url,
+            external_surreal_user: env::var("EXTERNAL_SURREAL_USER")
+                .unwrap_or_else(|_| "root".into()),
+            external_surreal_pass: env::var("EXTERNAL_SURREAL_PASS")
+                .unwrap_or_else(|_| "root_secret_password_change_me".into()),
+            external_surreal_ns: env::var("EXTERNAL_SURREAL_NS")
+                .unwrap_or_else(|_| "rag_namespace".into()),
+            external_surreal_db: env::var("EXTERNAL_SURREAL_DB")
+                .unwrap_or_else(|_| "external_db".into()),
+            external_db_schema_prompt,
             tei_embed_url: env::var("TEI_EMBED_URL")
                 .unwrap_or_else(|_| "http://localhost:8081".into()),
             tei_rerank_url: env::var("TEI_RERANK_URL")
@@ -69,4 +97,3 @@ impl AppConfig {
         }
     }
 }
-

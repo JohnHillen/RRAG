@@ -86,6 +86,105 @@ pub struct CrmEmployeeItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FleetVehicleItem {
+    pub truck_id: String,
+    pub license_plate: String,
+    pub model: String,
+    pub vehicle_type: String,
+    pub emission_class: String,
+    pub assigned_driver: String,
+    pub mileage_km: i64,
+    pub next_inspection_due_km: i64,
+    pub km_until_inspection: i64,
+    pub next_inspection_date: String,
+    pub inspection_status: String,
+    pub oil_level_percent: i64,
+    pub oil_status: String,
+    pub adblue_level_percent: i64,
+    pub brake_wear_percent: i64,
+    pub tire_pressure_bar: f64,
+    pub fuel_consumption_l_100km: f64,
+    pub cooling_unit_status: String,
+    #[serde(default)]
+    pub adr_certified: bool,
+    pub current_location: String,
+    pub operational_status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GpsWaypointItem {
+    pub timestamp: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub location_name: String,
+    pub speed_kmh: i64,
+    #[serde(default)]
+    pub temp_c: Option<f64>,
+    #[serde(default)]
+    pub satellites_used: i64,
+    #[serde(default)]
+    pub hdop: f64,
+    #[serde(default)]
+    pub gps_accuracy_m: f64,
+    #[serde(default)]
+    pub fix_type: String,
+    #[serde(default)]
+    pub weather_condition: String,
+    #[serde(default)]
+    pub ambient_temp_c: f64,
+    #[serde(default)]
+    pub precipitation_mm_h: f64,
+    #[serde(default)]
+    pub wind_speed_kmh: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FleetTourItem {
+    pub tour_id: String,
+    pub truck_id: String,
+    pub license_plate: String,
+    pub driver_name: String,
+    pub departure_date: String,
+    pub arrival_date: String,
+    pub month: String,
+    pub origin_warehouse_id: String,
+    pub origin_city: String,
+    pub destination_warehouse_id: String,
+    pub destination_city: String,
+    pub customer_name: String,
+    pub cargo_description: String,
+    pub cargo_category: String,
+    pub cargo_weight_tons: f64,
+    pub distance_km: i64,
+    pub gps_route: String,
+    #[serde(default)]
+    pub gps_waypoints: Vec<GpsWaypointItem>,
+    #[serde(default)]
+    pub google_maps_url: String,
+    #[serde(default)]
+    pub recorded_temp_c: Option<f64>,
+    #[serde(default)]
+    pub delay_minutes: i64,
+    pub delivery_status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FleetWarehouseItem {
+    pub warehouse_id: String,
+    pub name: String,
+    pub city: String,
+    pub address: String,
+    pub gps_coords: String,
+    pub storage_type: String,
+    pub capacity_pallets: i64,
+    pub utilization_percent: i64,
+    #[serde(default)]
+    pub certifications: Vec<String>,
+    pub restrictions: String,
+    pub manager_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttachedChatDoc {
     pub filename: String,
     pub text: String,
@@ -975,7 +1074,9 @@ fn App() -> impl IntoView {
 
     // --- Modal & Ingestion Signals ---
     let (show_ingest_modal, set_show_ingest_modal) = create_signal(false);
-    let (is_modal_fullscreen, set_is_modal_fullscreen) = create_signal(false);
+    let (is_modal_fullscreen, set_is_modal_fullscreen) = create_signal(true);
+    let (viewing_pdf_doc, set_viewing_pdf_doc) = create_signal::<Option<(String, String)>>(None);
+    let (viewing_tour_map, set_viewing_tour_map) = create_signal::<Option<(String, String, String)>>(None);
     let (doc_search_term, set_doc_search_term) = create_signal(String::new());
     let (selected_category_filter, set_selected_category_filter) = create_signal("all".to_string());
     let (is_filter_expanded, set_is_filter_expanded) = create_signal(false);
@@ -992,6 +1093,14 @@ fn App() -> impl IntoView {
     let (crm_employees, set_crm_employees) = create_signal(Vec::<CrmEmployeeItem>::new());
     let (crm_search_term, set_crm_search_term) = create_signal(String::new());
     let (is_seeding_crm, set_is_seeding_crm) = create_signal(false);
+
+    let (fleet_vehicles, set_fleet_vehicles) = create_signal(Vec::<FleetVehicleItem>::new());
+    let (fleet_tours, set_fleet_tours) = create_signal(Vec::<FleetTourItem>::new());
+    let (fleet_warehouses, set_fleet_warehouses) = create_signal(Vec::<FleetWarehouseItem>::new());
+    let (fleet_subtab, set_fleet_subtab) = create_signal("vehicles".to_string());
+    let (fleet_search_term, set_fleet_search_term) = create_signal(String::new());
+    let (is_seeding_fleet, set_is_seeding_fleet) = create_signal(false);
+    let (webstore_counts, set_webstore_counts) = create_signal((0usize, 0usize, 0usize));
 
     let (doc_title, set_doc_title) = create_signal(String::new());
     let (doc_text, set_doc_text) = create_signal(String::new());
@@ -1020,6 +1129,38 @@ fn App() -> impl IntoView {
                     let list: Vec<CrmEmployeeItem> =
                         serde_json::from_value(json["employees"].clone()).unwrap_or_default();
                     set_crm_employees.set(list);
+                }
+            }
+        });
+    };
+
+    // Lädt alle strukturierten Speditions-Datensätze (LKWs, GPS-Touren, Lagerhallen) aus SurrealDB (`GET /v1/fleet/overview`)
+    let refresh_fleet_data = move || {
+        spawn_local(async move {
+            if let Ok(resp) = Request::get("/v1/fleet/overview").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let v_list: Vec<FleetVehicleItem> =
+                        serde_json::from_value(json["vehicles"].clone()).unwrap_or_default();
+                    let t_list: Vec<FleetTourItem> =
+                        serde_json::from_value(json["tours"].clone()).unwrap_or_default();
+                    let w_list: Vec<FleetWarehouseItem> =
+                        serde_json::from_value(json["warehouses"].clone()).unwrap_or_default();
+                    set_fleet_vehicles.set(v_list);
+                    set_fleet_tours.set(t_list);
+                    set_fleet_warehouses.set(w_list);
+                }
+            }
+        });
+    };
+
+    let refresh_webstore_data = move || {
+        spawn_local(async move {
+            if let Ok(resp) = Request::get("/v1/webstore/overview").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let p_cnt = json["product_count"].as_u64().unwrap_or(0) as usize;
+                    let s_cnt = json["sale_count"].as_u64().unwrap_or(0) as usize;
+                    let c_cnt = json["contract_count"].as_u64().unwrap_or(0) as usize;
+                    set_webstore_counts.set((p_cnt, s_cnt, c_cnt));
                 }
             }
         });
@@ -1105,7 +1246,10 @@ fn App() -> impl IntoView {
 
     create_effect(move |_| {
         load_llm_config();
+        refresh_documents();
         refresh_crm_employees();
+        refresh_fleet_data();
+        refresh_webstore_data();
     });
 
     // --- Handler: Dateiauswahl (Dateien oder ganzer Ordner) geändert ---
@@ -2155,19 +2299,28 @@ fn App() -> impl IntoView {
                             <span class="icon-caption">{move || if is_en() { "Docs" } else { "Dokumente" }}</span>
                         </button>
 
-                        <button
-                            class="sidebar-icon-btn"
-                            title=move || if is_en() { "Structured CRM / HR Employee Database (300+ SQL Records)" } else { "Strukturierte CRM / HR Mitarbeiter-Datenbank (300+ SQL-Datensätze)" }
-                            on:click=move |_| {
-                                set_ingest_status.set(String::new());
-                                set_modal_tab.set("crm".to_string());
-                                refresh_crm_employees();
-                                set_show_ingest_modal.set(true);
-                            }
-                        >
-                            <span>"🏢"</span>
-                            <span class="icon-caption">"CRM/DB"</span>
-                        </button>
+                        {move || (!crm_employees.get().is_empty() || !fleet_vehicles.get().is_empty()).then(|| view! {
+                            <button
+                                class="sidebar-icon-btn"
+                                title=move || if is_en() { "Active Showcase SQL Database" } else { "Aktive Showcase SQL-Datenbank" }
+                                on:click=move |_| {
+                                    set_ingest_status.set(String::new());
+                                    refresh_crm_employees();
+                                    refresh_fleet_data();
+                                    if !fleet_vehicles.get_untracked().is_empty() {
+                                        set_modal_tab.set("fleet".to_string());
+                                    } else if !crm_employees.get_untracked().is_empty() {
+                                        set_modal_tab.set("crm".to_string());
+                                    } else {
+                                        set_modal_tab.set("docs".to_string());
+                                    }
+                                    set_show_ingest_modal.set(true);
+                                }
+                            >
+                                <span>"🗄️"</span>
+                                <span class="icon-caption">"SQL/DB"</span>
+                            </button>
+                        })}
 
                         <button
                             class="sidebar-icon-btn"
@@ -2206,7 +2359,76 @@ fn App() -> impl IntoView {
                         </span>
                     </div>
 
-                    <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
+                    <div style="display: flex; align-items: center; gap: 0.55rem; flex-shrink: 0; flex-wrap: wrap;">
+                        // --- Aktiver Showcase Indikator im Header ---
+                        <button
+                            type="button"
+                            style=move || {
+                                let (wp_cnt, _, _) = webstore_counts.get();
+                                if !fleet_vehicles.get().is_empty() {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(16, 185, 129, 0.16); border: 1px solid #10b981; color: #6ee7b7; cursor: pointer;"
+                                } else if !crm_employees.get().is_empty() {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(99, 102, 241, 0.18); border: 1px solid #818cf8; color: #c7d2fe; cursor: pointer;"
+                                } else if wp_cnt > 0 {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(245, 158, 11, 0.18); border: 1px solid #f59e0b; color: #fde68a; cursor: pointer;"
+                                } else {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 600; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(30, 41, 59, 0.7); border: 1px solid #475569; color: #94a3b8; cursor: pointer;"
+                                }
+                            }
+                            title=move || if is_en() {
+                                "Active Showcase in SurrealDB (click to open database explorer)"
+                            } else {
+                                "Aktives Showcase in SurrealDB (Klicken, um die Datenbank-Ansicht zu öffnen)"
+                            }
+                            on:click=move |_| {
+                                set_ingest_status.set(String::new());
+                                refresh_documents();
+                                refresh_crm_employees();
+                                refresh_fleet_data();
+                                refresh_webstore_data();
+                                if !fleet_vehicles.get_untracked().is_empty() {
+                                    set_modal_tab.set("fleet".to_string());
+                                } else if !crm_employees.get_untracked().is_empty() {
+                                    set_modal_tab.set("crm".to_string());
+                                } else {
+                                    set_modal_tab.set("docs".to_string());
+                                }
+                                set_is_modal_fullscreen.set(true);
+                                set_show_ingest_modal.set(true);
+                            }
+                        >
+                            {move || {
+                                let v_cnt = fleet_vehicles.get().len();
+                                let t_cnt = fleet_tours.get().len();
+                                let e_cnt = crm_employees.get().len();
+                                let (wp_cnt, ws_cnt, _) = webstore_counts.get();
+                                let d_cnt = stored_docs.get().len();
+                                if v_cnt > 0 {
+                                    if is_en() {
+                                        format!("🚛 Showcase 02: Spedition ({} Trucks · {} Tours · {} PDFs)", v_cnt, t_cnt, d_cnt)
+                                    } else {
+                                        format!("🚛 Showcase 02: Spedition ({} LKWs · {} Touren · {} PDFs)", v_cnt, t_cnt, d_cnt)
+                                    }
+                                } else if e_cnt > 0 {
+                                    if is_en() {
+                                        format!("🏢 Showcase 01: HR & Consulting ({} Employees · {} PDFs)", e_cnt, d_cnt)
+                                    } else {
+                                        format!("🏢 Showcase 01: HR & Consulting ({} Mitarbeiter · {} PDFs)", e_cnt, d_cnt)
+                                    }
+                                } else if wp_cnt > 0 {
+                                    if is_en() {
+                                        format!("🛒 Showcase 03: Webstore Multi-DB ({} Products · {} Sales · {} PDFs)", wp_cnt, ws_cnt, d_cnt)
+                                    } else {
+                                        format!("🛒 Showcase 03: Webstore Multi-DB ({} Artikel · {} Verkäufe · {} PDFs)", wp_cnt, ws_cnt, d_cnt)
+                                    }
+                                } else if is_en() {
+                                    format!("⚪ No Showcase active ({} Docs)", d_cnt)
+                                } else {
+                                    format!("⚪ Kein Showcase aktiv ({} Dok.)", d_cnt)
+                                }
+                            }}
+                        </button>
+
                         <button
                             class="btn btn-secondary"
                             style="padding: 0.35rem 0.75rem; font-size: 0.76rem; display: flex; align-items: center; gap: 0.5rem; border-radius: 999px;"
@@ -2225,7 +2447,7 @@ fn App() -> impl IntoView {
                                 }}
                             </span>
                             <span style="color:#475569;">"|"</span>
-                            <span style="color:#a5b4fc; font-weight:600;">
+                            <span style="background: rgba(79, 70, 229, 0.28); border: 1px solid #818cf8; color: #e0e7ff; font-weight: 700; padding: 0.14rem 0.55rem; border-radius: 999px; box-shadow: 0 0 8px rgba(99, 102, 241, 0.35);">
                                 {move || format!("🤖 {}", llm_model_sig.get())}
                             </span>
                             <span style="color:#475569;">"|"</span>
@@ -2373,50 +2595,121 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                         let relations_list = src.relations.clone();
+                                                        let src_doc_id = src.doc_id.clone();
+                                                        let src_doc_title = src.doc_title.clone();
+                                                        let is_pdf_source = !src.doc_id.is_empty()
+                                                            && !src.doc_id.starts_with("crm_")
+                                                            && !src.doc_id.starts_with("fleet_")
+                                                            && !src.doc_id.starts_with("webstore_")
+                                                            && !src.doc_id.starts_with("internal_")
+                                                            && !src.doc_id.starts_with("external_")
+                                                            && !src.doc_id.starts_with("ephemeral_");
+                                                        let src_html = render_markdown_to_html(&src.content);
                                                         view! {
-                                                            <div class="source-item">
-                                                                <div>
-                                                                    <span class="badge">
-                                                                        {move || if is_en() {
-                                                                            format!("Source #{}", i + 1)
-                                                                        } else {
-                                                                            format!("Quelle #{}", i + 1)
-                                                                        }}
-                                                                    </span>
-                                                                    <strong>{src.doc_title}</strong>
-                                                                    <span style="color:#94a3b8; margin-left:8px;">
-                                                                        {format!("(Chunk #{}, Score: {:.4})", src.chunk_index, score)}
-                                                                    </span>
+                                                            <details class="source-item">
+                                                                <summary>
+                                                                    <div style="display:flex; align-items:center; flex-wrap:wrap; gap:0.35rem;">
+                                                                        <span class="source-chevron">"▶"</span>
+                                                                        <span class="badge">
+                                                                            {move || if is_en() {
+                                                                                format!("Source #{}", i + 1)
+                                                                            } else {
+                                                                                format!("Quelle #{}", i + 1)
+                                                                            }}
+                                                                        </span>
+                                                                        <strong>{src.doc_title.clone()}</strong>
+                                                                        <span style="color:#94a3b8; margin-left:4px;">
+                                                                            {format!("(Chunk #{}, Score: {:.4})", src.chunk_index, score)}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;">
+                                                                        <span style="font-size:0.71rem; color:#818cf8; font-weight:500;">
+                                                                            {move || if is_en() { "Click to toggle" } else { "Ein-/Ausklappen" }}
+                                                                        </span>
+                                                                        {is_pdf_source.then(|| {
+                                                                            let did = src_doc_id.clone();
+                                                                            let dtitle = src_doc_title.clone();
+                                                                            view! {
+                                                                                <button
+                                                                                    type="button"
+                                                                                    class="btn btn-secondary"
+                                                                                    style="padding:0.2rem 0.6rem; font-size:0.73rem; background:rgba(99,102,241,0.18); border-color:#6366f1; color:#c7d2fe;"
+                                                                                    title=move || if is_en() { "Open PDF document in viewer" } else { "PDF-Dokument im Viewer anzeigen" }
+                                                                                    on:click=move |ev| {
+                                                                                        ev.stop_propagation();
+                                                                                        ev.prevent_default();
+                                                                                        set_viewing_pdf_doc.set(Some((did.clone(), dtitle.clone())));
+                                                                                    }
+                                                                                >
+                                                                                    {move || if is_en() { "📄 View PDF" } else { "📄 PDF anzeigen" }}
+                                                                                </button>
+                                                                            }
+                                                                        })}
+                                                                        {(src_doc_id == "fleet_logistics_tables").then(|| {
+                                                                            let all_known_tours = fleet_tours.get();
+                                                                            let matched_tours_in_chunk: Vec<FleetTourItem> = all_known_tours
+                                                                                .into_iter()
+                                                                                .filter(|t| src.content.contains(&t.tour_id))
+                                                                                .take(6)
+                                                                                .collect();
+                                                                            view! {
+                                                                                <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
+                                                                                    {matched_tours_in_chunk.into_iter().map(|t| {
+                                                                                        let tid = t.tour_id.clone();
+                                                                                        let tlabel = format!("{} ({} ➔ {}, {})", t.tour_id, t.origin_city, t.destination_city, t.truck_id);
+                                                                                        let gmap = t.google_maps_url.clone();
+                                                                                        view! {
+                                                                                            <button
+                                                                                                type="button"
+                                                                                                class="btn btn-secondary"
+                                                                                                style="padding:0.2rem 0.55rem; font-size:0.71rem; background:rgba(16,185,129,0.18); border-color:#10b981; color:#6ee7b7;"
+                                                                                                title="Tour-Route auf OpenStreetMap im Chat-UI anzeigen"
+                                                                                                on:click=move |ev| {
+                                                                                                    ev.stop_propagation();
+                                                                                                    ev.prevent_default();
+                                                                                                    set_viewing_tour_map.set(Some((tid.clone(), tlabel.clone(), gmap.clone())));
+                                                                                                }
+                                                                                            >
+                                                                                                {format!("🗺️ {} Karte", t.tour_id)}
+                                                                                            </button>
+                                                                                        }
+                                                                                    }).collect_view()}
+                                                                                </div>
+                                                                            }
+                                                                        })}
+                                                                    </div>
+                                                                </summary>
+                                                                <div class="source-body">
+                                                                    <div class="md-content" inner_html=src_html></div>
+                                                                    {(!graph_tags.is_empty()).then(|| view! {
+                                                                        <div style="margin-top:6px; padding-top:5px; border-top:1px dotted #334155; font-size:0.74rem; color:#c084fc;">
+                                                                            <strong>
+                                                                                {move || if is_en() { "🏷️ Entities: " } else { "🏷️ Entitäten: " }}
+                                                                            </strong>
+                                                                            {graph_tags.join(" · ")}
+                                                                        </div>
+                                                                    })}
+                                                                    {(!relations_list.is_empty()).then(|| view! {
+                                                                        <div style="margin-top:8px; padding:7px 10px; background:rgba(99, 102, 241, 0.08); border:1px solid rgba(99, 102, 241, 0.3); border-radius:6px; font-size:0.75rem;">
+                                                                            <div style="color:#a5b4fc; font-weight:700; margin-bottom:5px; display:flex; align-items:center; gap:5px;">
+                                                                                <span>"🕸️"</span>
+                                                                                <span>{move || if is_en() { "Knowledge Graph Relationships:" } else { "Wissensgraph-Beziehungen (GraphRAG):" }}</span>
+                                                                            </div>
+                                                                            <div style="display:flex; flex-wrap:wrap; gap:5px;">
+                                                                                {relations_list.into_iter().map(|rel| {
+                                                                                    view! {
+                                                                                        <span style="display:inline-flex; align-items:center; gap:4px; background:#1e1b4b; border:1px solid #4338ca; color:#e0e7ff; padding:2px 8px; border-radius:4px; font-size:0.72rem;">
+                                                                                            <strong style="color:#c7d2fe;">{rel.from}</strong>
+                                                                                            <span style="color:#818cf8; font-size:0.68rem; font-weight:600;">"➔ [" {rel.relation} "] ➔"</span>
+                                                                                            <strong style="color:#38bdf8;">{rel.to}</strong>
+                                                                                        </span>
+                                                                                    }
+                                                                                }).collect_view()}
+                                                                            </div>
+                                                                        </div>
+                                                                    })}
                                                                 </div>
-                                                                <div style="margin-top:6px; color:#cbd5e1;">{src.content}</div>
-                                                                {(!graph_tags.is_empty()).then(|| view! {
-                                                                    <div style="margin-top:6px; padding-top:5px; border-top:1px dotted #334155; font-size:0.74rem; color:#c084fc;">
-                                                                        <strong>
-                                                                            {move || if is_en() { "🏷️ Entities: " } else { "🏷️ Entitäten: " }}
-                                                                        </strong>
-                                                                        {graph_tags.join(" · ")}
-                                                                    </div>
-                                                                })}
-                                                                {(!relations_list.is_empty()).then(|| view! {
-                                                                    <div style="margin-top:8px; padding:7px 10px; background:rgba(99, 102, 241, 0.08); border:1px solid rgba(99, 102, 241, 0.3); border-radius:6px; font-size:0.75rem;">
-                                                                        <div style="color:#a5b4fc; font-weight:700; margin-bottom:5px; display:flex; align-items:center; gap:5px;">
-                                                                            <span>"🕸️"</span>
-                                                                            <span>{move || if is_en() { "Knowledge Graph Relationships:" } else { "Wissensgraph-Beziehungen (GraphRAG):" }}</span>
-                                                                        </div>
-                                                                        <div style="display:flex; flex-wrap:wrap; gap:5px;">
-                                                                            {relations_list.into_iter().map(|rel| {
-                                                                                view! {
-                                                                                    <span style="display:inline-flex; align-items:center; gap:4px; background:#1e1b4b; border:1px solid #4338ca; color:#e0e7ff; padding:2px 8px; border-radius:4px; font-size:0.72rem;">
-                                                                                        <strong style="color:#c7d2fe;">{rel.from}</strong>
-                                                                                        <span style="color:#818cf8; font-size:0.68rem; font-weight:600;">"➔ [" {rel.relation} "] ➔"</span>
-                                                                                        <strong style="color:#38bdf8;">{rel.to}</strong>
-                                                                                    </span>
-                                                                                }
-                                                                            }).collect_view()}
-                                                                        </div>
-                                                                    </div>
-                                                                })}
-                                                            </div>
+                                                            </details>
                                                         }
                                                     }).collect_view()}
                                                 </details>
@@ -2547,18 +2840,10 @@ fn App() -> impl IntoView {
                 </div>
             </main>
 
-            // --- Modal-Dialog für Wissen einspeisen & Multi-File Upload ---
+            // --- Modal-Dialog für Wissen einspeisen, Dokumente & SQL-Datenbanken (Immer im Focus Screen / Vollbild) ---
             {move || show_ingest_modal.get().then(|| {
-                let is_fs = is_modal_fullscreen.get();
-                let is_wide_tab = modal_tab.get() == "docs" || modal_tab.get() == "crm";
-                let backdrop_class = if is_fs { "modal-backdrop fullscreen" } else { "modal-backdrop" };
-                let dialog_class = if is_fs {
-                    "modal-dialog fullscreen"
-                } else if is_wide_tab {
-                    "modal-dialog wide"
-                } else {
-                    "modal-dialog"
-                };
+                let backdrop_class = "modal-backdrop fullscreen";
+                let dialog_class = "modal-dialog fullscreen";
 
                 view! {
                     <div class=backdrop_class>
@@ -2573,9 +2858,15 @@ fn App() -> impl IntoView {
                                         }
                                     } else if modal_tab.get() == "crm" {
                                         if is_en() {
-                                            "🏢 Enterprise CRM / HR Employee Database (Relational SQL + Hybrid RAG)"
+                                            "🏢 Showcase 01: Enterprise CRM / HR Employee Database (3,000 Records)"
                                         } else {
-                                            "🏢 Enterprise CRM / HR Mitarbeiter-Datenbank (Relationale SQL + Hybrid RAG)"
+                                            "🏢 Showcase 01: Enterprise CRM / HR Mitarbeiter-Datenbank (3.000 Datensätze)"
+                                        }
+                                    } else if modal_tab.get() == "fleet" {
+                                        if is_en() {
+                                            "🚛 Showcase 02: Spedition, Fleet Telemetry, GPS Tours & Warehouses"
+                                        } else {
+                                            "🚛 Showcase 02: Spedition, Fuhrpark-Telemetrie, GPS-Touren & Lagerhallen"
                                         }
                                     } else if is_en() {
                                         "📚 Ingest Knowledge into SurrealDB"
@@ -2586,22 +2877,9 @@ fn App() -> impl IntoView {
                                 <div style="display:flex; align-items:center; gap:0.5rem;">
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.8rem;"
-                                        title=move || if is_en() { "Toggle Fullscreen" } else { "Vollbild umschalten" }
-                                        on:click=move |_| set_is_modal_fullscreen.update(|fs| *fs = !*fs)
-                                    >
-                                        {move || if is_modal_fullscreen.get() {
-                                            if is_en() { "🗗 Restore" } else { "🗗 Fenster" }
-                                        } else {
-                                            if is_en() { "⛶ Fullscreen" } else { "⛶ Vollbild" }
-                                        }}
-                                    </button>
-                                    <button
-                                        class="btn btn-secondary"
                                         style="padding: 0.35rem 0.75rem; font-size:0.8rem;"
                                         on:click=move |_| {
                                             set_show_ingest_modal.set(false);
-                                            set_is_modal_fullscreen.set(false);
                                         }
                                     >
                                         {move || if is_en() { "✕ Close" } else { "✕ Schließen" }}
@@ -2635,19 +2913,36 @@ fn App() -> impl IntoView {
                                     format!("🗂️ Gespeicherte Dokumente ({})", stored_docs.get().len())
                                 }}
                             </button>
-                            <button
-                                class=move || if modal_tab.get() == "crm" { "tab-btn active" } else { "tab-btn" }
-                                on:click=move |_| {
-                                    refresh_crm_employees();
-                                    set_modal_tab.set("crm".to_string());
-                                }
-                            >
-                                {move || if is_en() {
-                                    format!("🏢 CRM / HR DB ({})", crm_employees.get().len())
-                                } else {
-                                    format!("🏢 CRM / HR DB ({})", crm_employees.get().len())
-                                }}
-                            </button>
+                            {move || (!crm_employees.get().is_empty()).then(|| view! {
+                                <button
+                                    class=move || if modal_tab.get() == "crm" { "tab-btn active" } else { "tab-btn" }
+                                    on:click=move |_| {
+                                        refresh_crm_employees();
+                                        set_modal_tab.set("crm".to_string());
+                                    }
+                                >
+                                    {move || if is_en() {
+                                        format!("🏢 Showcase 01: HR / CRM DB ({})", crm_employees.get().len())
+                                    } else {
+                                        format!("🏢 Showcase 01: HR / CRM DB ({})", crm_employees.get().len())
+                                    }}
+                                </button>
+                            })}
+                            {move || (!fleet_vehicles.get().is_empty()).then(|| view! {
+                                <button
+                                    class=move || if modal_tab.get() == "fleet" { "tab-btn active" } else { "tab-btn" }
+                                    on:click=move |_| {
+                                        refresh_fleet_data();
+                                        set_modal_tab.set("fleet".to_string());
+                                    }
+                                >
+                                    {move || if is_en() {
+                                        format!("🚛 Showcase 02: Spedition ({} Trucks / {} Tours)", fleet_vehicles.get().len(), fleet_tours.get().len())
+                                    } else {
+                                        format!("🚛 Showcase 02: Spedition ({} LKWs / {} Touren)", fleet_vehicles.get().len(), fleet_tours.get().len())
+                                    }}
+                                </button>
+                            })}
                         </div>
 
                         <div class="modal-body">
@@ -3158,6 +3453,10 @@ fn App() -> impl IntoView {
                                                                             {cat_docs.into_iter().map(|doc| {
                                                                                 let id_for_del = doc.doc_id.clone();
                                                                                 let title_for_del = doc.doc_title.clone();
+                                                                                let id_for_view = doc.doc_id.clone();
+                                                                                let title_for_view = doc.doc_title.clone();
+                                                                                let id_for_title_click = doc.doc_id.clone();
+                                                                                let title_for_title_click = doc.doc_title.clone();
                                                                                 let (_, clean_title) = parse_category_and_title(&doc.doc_title);
                                                                                 let chunk_badge = format!("🧩 {} Chunks", doc.chunk_count);
                                                                                 let date_badge = format!("🕒 {}", doc.created_at);
@@ -3167,7 +3466,14 @@ fn App() -> impl IntoView {
 
                                                                                 view! {
                                                                                     <div class="doc-card">
-                                                                                        <div class="doc-card-header">
+                                                                                        <div
+                                                                                            class="doc-card-header"
+                                                                                            style="cursor:pointer;"
+                                                                                            title=move || if is_en() { "Click to open PDF" } else { "Klicken, um das PDF anzuzeigen" }
+                                                                                            on:click=move |_| {
+                                                                                                set_viewing_pdf_doc.set(Some((id_for_title_click.clone(), title_for_title_click.clone())));
+                                                                                            }
+                                                                                        >
                                                                                             <span class="doc-card-icon">"📄"</span>
                                                                                             <span class="doc-card-title" title=doc.doc_title.clone()>
                                                                                                 {clean_title}
@@ -3204,7 +3510,17 @@ fn App() -> impl IntoView {
                                                                                             }}
                                                                                         </div>
 
-                                                                                        <div class="doc-card-actions">
+                                                                                        <div class="doc-card-actions" style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                                                                                            <button
+                                                                                                class="btn btn-secondary"
+                                                                                                style="padding:0.25rem 0.6rem; font-size:0.75rem; background:rgba(99,102,241,0.18); color:#c7d2fe; border-color:#6366f1;"
+                                                                                                title=move || if is_en() { "View PDF directly in browser" } else { "PDF direkt im Browser anzeigen" }
+                                                                                                on:click=move |_| {
+                                                                                                    set_viewing_pdf_doc.set(Some((id_for_view.clone(), title_for_view.clone())));
+                                                                                                }
+                                                                                            >
+                                                                                                {move || if is_en() { "📄 View PDF" } else { "📄 PDF anzeigen" }}
+                                                                                            </button>
                                                                                             <button
                                                                                                 class="btn btn-secondary"
                                                                                                 style="padding:0.25rem 0.55rem; font-size:0.75rem; color:#fca5a5; border-color:#7f1d1d;"
@@ -3277,57 +3593,9 @@ fn App() -> impl IntoView {
                                                         on:click=move |_| {
                                                             set_is_seeding_crm.set(true);
                                                             set_ingest_status.set(if is_en() {
-                                                                "⏳ Seeding 300 employee records (30 full matches, 15 near-matches)...".to_string()
+                                                                "⏳ Seeding 3,000 employee records (300 full matches, 150 near-matches)...".to_string()
                                                             } else {
-                                                                "⏳ Generiere 300 Mitarbeiter-Datensätze (30 Volltreffer, 15 Weiterbildungskandidaten)...".to_string()
-                                                            });
-                                                            spawn_local(async move {
-                                                                let payload = serde_json::json!({ "count": 300 });
-                                                                match Request::post("/v1/crm/seed")
-                                                                    .header("Content-Type", "application/json")
-                                                                    .body(payload.to_string())
-                                                                    .unwrap()
-                                                                    .send()
-                                                                    .await
-                                                                {
-                                                                    Ok(resp) if resp.ok() => {
-                                                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                                                            let cnt = json["count"].as_u64().unwrap_or(300);
-                                                                            set_ingest_status.set(if is_en() {
-                                                                                format!("✅ {} structured employees (incl. 30 full matches & 15 training candidates) seeded into SurrealDB!", cnt)
-                                                                            } else {
-                                                                                format!("✅ {} strukturierte Mitarbeiter (davon 30 Volltreffer & 15 Weiterbildungskandidaten) in SurrealDB angelegt!", cnt)
-                                                                            });
-                                                                            refresh_crm_employees();
-                                                                        }
-                                                                    }
-                                                                    _ => {
-                                                                        set_ingest_status.set("❌ Fehler beim Generieren der CRM-Demo-Datenbank.".to_string());
-                                                                    }
-                                                                }
-                                                                set_is_seeding_crm.set(false);
-                                                            });
-                                                        }
-                                                    >
-                                                        {move || if is_seeding_crm.get() {
-                                                            if is_en() { "⏳ Seeding..." } else { "⏳ Generiere..." }
-                                                        } else if is_en() {
-                                                            "⚡ Seed 300 (30 Matches)"
-                                                        } else {
-                                                            "⚡ 300 Mitarbeiter (30 Treffer)"
-                                                        }}
-                                                    </button>
-
-                                                    <button
-                                                        class="btn"
-                                                        style="padding:0.4rem 0.75rem; font-size:0.76rem; background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%);"
-                                                        disabled=move || is_seeding_crm.get()
-                                                        on:click=move |_| {
-                                                            set_is_seeding_crm.set(true);
-                                                            set_ingest_status.set(if is_en() {
-                                                                "⏳ Seeding 3,000 employee records for Stress-Test (300 full matches, 150 near-matches)...".to_string()
-                                                            } else {
-                                                                "⏳ Generiere 3.000 Mitarbeiter für Performance- & Stress-Test (300 Volltreffer, 150 Weiterbildungskandidaten)...".to_string()
+                                                                "⏳ Lade Showcase 01: 3.000 Mitarbeiter (300 Volltreffer, 150 Weiterbildungskandidaten)...".to_string()
                                                             });
                                                             spawn_local(async move {
                                                                 let payload = serde_json::json!({ "count": 3000 });
@@ -3342,15 +3610,15 @@ fn App() -> impl IntoView {
                                                                         if let Ok(json) = resp.json::<serde_json::Value>().await {
                                                                             let cnt = json["count"].as_u64().unwrap_or(3000);
                                                                             set_ingest_status.set(if is_en() {
-                                                                                format!("🔥 Stress-Test ready: {} structured employees (300 full matches & 150 training candidates) seeded into SurrealDB!", cnt)
+                                                                                format!("✅ Showcase 01 ready: {} structured employees (300 full matches & 150 training candidates) seeded into SurrealDB!", cnt)
                                                                             } else {
-                                                                                format!("🔥 Stress-Test bereit: {} strukturierte Mitarbeiter (300 Volltreffer & 150 Weiterbildungskandidaten) in SurrealDB angelegt!", cnt)
+                                                                                format!("✅ Showcase 01 geladen: {} strukturierte Mitarbeiter (300 Volltreffer & 150 Weiterbildungskandidaten) in SurrealDB angelegt!", cnt)
                                                                             });
                                                                             refresh_crm_employees();
                                                                         }
                                                                     }
                                                                     _ => {
-                                                                        set_ingest_status.set("❌ Fehler beim Generieren der 3.000er Stress-Test-Datenbank.".to_string());
+                                                                        set_ingest_status.set("❌ Fehler beim Laden der 3.000er Mitarbeiter-Datenbank.".to_string());
                                                                     }
                                                                 }
                                                                 set_is_seeding_crm.set(false);
@@ -3358,11 +3626,11 @@ fn App() -> impl IntoView {
                                                         }
                                                     >
                                                         {move || if is_seeding_crm.get() {
-                                                            if is_en() { "⏳ Seeding..." } else { "⏳ Generiere..." }
+                                                            if is_en() { "⏳ Loading..." } else { "⏳ Lade..." }
                                                         } else if is_en() {
-                                                            "🔥 Seed 3,000 (300 Matches)"
+                                                            "🏢 Load 3,000 Employees (300 Matches)"
                                                         } else {
-                                                            "🔥 3.000 Mitarbeiter (300 Treffer)"
+                                                            "🏢 3.000 Mitarbeiter laden (300 Treffer)"
                                                         }}
                                                     </button>
 
@@ -3379,6 +3647,7 @@ fn App() -> impl IntoView {
                                                                             "🗑️ Strukturierte CRM/HR-Mitarbeitertabelle geleert.".to_string()
                                                                         });
                                                                         refresh_crm_employees();
+                                                                        set_modal_tab.set("docs".to_string());
                                                                     }
                                                                 }
                                                             });
@@ -3435,9 +3704,9 @@ fn App() -> impl IntoView {
                                                         </strong>
                                                         <span style="font-size:0.8rem; color:#64748b;">
                                                             {move || if is_en() {
-                                                                "Click '⚡ Seed 300 Demo Employees' above to populate the relational HR/CRM table."
+                                                                "Run './setup.sh --showcase 1' or click '🏢 Load 3,000 Employees' above."
                                                             } else {
-                                                                "Klicke oben auf '⚡ 300 Mitarbeiter generieren (Demo-DB)', um die relationale HR/CRM-Tabelle zu befüllen."
+                                                                "Starte mit './setup.sh --showcase 1' oder klicke oben auf '🏢 3.000 Mitarbeiter laden (300 Treffer)'."
                                                             }}
                                                         </span>
                                                     </div>
@@ -3473,7 +3742,7 @@ fn App() -> impl IntoView {
                                                     .count();
 
                                                 view! {
-                                                    <div style="display:flex; flex-direction:column; gap:0.55rem; max-height:460px; overflow-y:auto; padding-right:0.25rem;">
+                                                    <div style="display:flex; flex-direction:column; gap:0.55rem; flex:1; min-height:0; overflow-y:auto; padding-right:0.25rem;">
                                                         <div style="font-size:0.75rem; color:#94a3b8; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
                                                             <span>
                                                                 {if is_en() {
@@ -3548,6 +3817,387 @@ fn App() -> impl IntoView {
                                         }}
                                     </div>
                                 }.into_view()
+                            } else if modal_tab.get() == "fleet" {
+                                // Tab "fleet" -> Showcase 02: Spedition, LKW-Zustandsdaten, GPS-Touren (März & April) & Lagerhallen
+                                view! {
+                                    <div style="display:flex; flex-direction:column; gap:0.9rem; height:100%;">
+                                        // 1. Header & Seed-Aktionsleiste
+                                        <div style="background:rgba(15, 23, 42, 0.75); border:1px solid #334155; border-radius:0.65rem; padding:0.85rem 1rem; display:flex; flex-direction:column; gap:0.65rem;">
+                                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem;">
+                                                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                                                    <span style="background:rgba(56, 189, 248, 0.18); border:1px solid #38bdf8; color:#e0f2fe; padding:0.25rem 0.65rem; border-radius:999px; font-size:0.78rem; font-weight:700;">
+                                                        {move || format!("🚛 {} LKWs", fleet_vehicles.get().len())}
+                                                    </span>
+                                                    <span style="background:rgba(16, 185, 129, 0.18); border:1px solid #10b981; color:#d1fae5; padding:0.25rem 0.65rem; border-radius:999px; font-size:0.78rem; font-weight:700;">
+                                                        {move || format!("📍 {} GPS-Touren (März & April)", fleet_tours.get().len())}
+                                                    </span>
+                                                    <span style="background:rgba(168, 85, 247, 0.18); border:1px solid #a855f7; color:#f3e8ff; padding:0.25rem 0.65rem; border-radius:999px; font-size:0.78rem; font-weight:700;">
+                                                        {move || format!("🏭 {} Lagerhallen", fleet_warehouses.get().len())}
+                                                    </span>
+                                                </div>
+
+                                                <div style="display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap;">
+                                                    <button
+                                                        class="btn"
+                                                        style="padding:0.4rem 0.75rem; font-size:0.76rem; background:linear-gradient(135deg, #10b981 0%, #059669 100%);"
+                                                        disabled=move || is_seeding_fleet.get()
+                                                        on:click=move |_| {
+                                                            set_is_seeding_fleet.set(true);
+                                                            set_ingest_status.set("⏳ Lade Showcase 02: Speditions-Flotte (120 LKWs, 232 GPS-Touren März/April, 5 Lagerhallen)...".to_string());
+                                                            spawn_local(async move {
+                                                                let payload = serde_json::json!({ "truck_count": 120 });
+                                                                if let Ok(resp) = Request::post("/v1/fleet/seed")
+                                                                    .header("Content-Type", "application/json")
+                                                                    .body(payload.to_string())
+                                                                    .unwrap()
+                                                                    .send()
+                                                                    .await
+                                                                {
+                                                                    if resp.ok() {
+                                                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                                                            let vc = json["vehicle_count"].as_u64().unwrap_or(120);
+                                                                            let tc = json["tour_count"].as_u64().unwrap_or(232);
+                                                                            let wc = json["warehouse_count"].as_u64().unwrap_or(5);
+                                                                            set_ingest_status.set(format!("✅ Showcase 02 geladen: {} LKWs, {} GPS-Touren (März & April) & {} Lagerhallen in SurrealDB!", vc, tc, wc));
+                                                                            refresh_fleet_data();
+                                                                        }
+                                                                    }
+                                                                }
+                                                                set_is_seeding_fleet.set(false);
+                                                            });
+                                                        }
+                                                    >
+                                                        "🚛 120 LKWs + 232 Touren laden"
+                                                    </button>
+
+                                                    <button
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.4rem 0.7rem; font-size:0.78rem; color:#fca5a5; border-color:#7f1d1d;"
+                                                        on:click=move |_| {
+                                                            spawn_local(async move {
+                                                                if let Ok(resp) = Request::delete("/v1/fleet/overview").send().await {
+                                                                    if resp.ok() {
+                                                                        set_ingest_status.set("🗑️ Speditions-Tabellen (LKWs, Touren, Lagerhallen) geleert.".to_string());
+                                                                        refresh_fleet_data();
+                                                                        set_modal_tab.set("docs".to_string());
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    >
+                                                        "🗑️ DB leeren"
+                                                    </button>
+
+                                                    <button
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.4rem 0.7rem; font-size:0.78rem;"
+                                                        on:click=move |_| refresh_fleet_data()
+                                                    >
+                                                        "🔄 Aktualisieren"
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            // Sub-Tabs: LKWs | GPS-Touren | Lagerhallen
+                                            <div style="display:flex; gap:0.45rem; flex-wrap:wrap; padding-top:0.25rem; border-top:1px solid #1e293b;">
+                                                <button
+                                                    type="button"
+                                                    style=move || if fleet_subtab.get() == "vehicles" {
+                                                        "padding:0.35rem 0.75rem; font-size:0.76rem; font-weight:700; border-radius:6px; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer;"
+                                                    } else {
+                                                        "padding:0.35rem 0.75rem; font-size:0.76rem; border-radius:6px; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
+                                                    }
+                                                    on:click=move |_| set_fleet_subtab.set("vehicles".to_string())
+                                                >
+                                                    {move || format!("🔧 Fuhrpark & Telemetrie ({} LKWs)", fleet_vehicles.get().len())}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    style=move || if fleet_subtab.get() == "tours" {
+                                                        "padding:0.35rem 0.75rem; font-size:0.76rem; font-weight:700; border-radius:6px; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer;"
+                                                    } else {
+                                                        "padding:0.35rem 0.75rem; font-size:0.76rem; border-radius:6px; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
+                                                    }
+                                                    on:click=move |_| set_fleet_subtab.set("tours".to_string())
+                                                >
+                                                    {move || format!("📍 GPS-Touren März & April ({})", fleet_tours.get().len())}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    style=move || if fleet_subtab.get() == "warehouses" {
+                                                        "padding:0.35rem 0.75rem; font-size:0.76rem; font-weight:700; border-radius:6px; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer;"
+                                                    } else {
+                                                        "padding:0.35rem 0.75rem; font-size:0.76rem; border-radius:6px; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
+                                                    }
+                                                    on:click=move |_| set_fleet_subtab.set("warehouses".to_string())
+                                                >
+                                                    {move || format!("🏭 Lagerhallen-Netzwerk ({})", fleet_warehouses.get().len())}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <input
+                                            class="docs-search-input"
+                                            type="text"
+                                            placeholder="🔍 Filtern nach LKW-ID (LKW-01), Kennzeichen, Fahrer, Stadt (Berlin), Monat (April), Kunde (BioPharma) oder Lagerhalle..."
+                                            prop:value=move || fleet_search_term.get()
+                                            on:input=move |ev| set_fleet_search_term.set(event_target_value(&ev))
+                                        />
+
+                                        {move || {
+                                            let q = fleet_search_term.get().trim().to_lowercase();
+                                            let sub = fleet_subtab.get();
+
+                                            if fleet_vehicles.get().is_empty() && fleet_tours.get().is_empty() {
+                                                view! {
+                                                    <div style="padding:2.5rem; text-align:center; color:#64748b; border:1px dashed #334155; border-radius:8px;">
+                                                        <div style="font-size:2rem; margin-bottom:0.5rem;">"🚛"</div>
+                                                        <strong style="display:block; color:#94a3b8; font-size:0.95rem;">
+                                                            "Noch keine Speditions- & Fuhrpark-Daten in SurrealDB geladen."
+                                                        </strong>
+                                                        <span style="font-size:0.8rem; color:#64748b;">
+                                                            "Starte mit './setup.sh --showcase 2' oder klicke oben auf '🚛 120 LKWs + 232 Touren laden'."
+                                                        </span>
+                                                    </div>
+                                                }.into_view()
+                                            } else if sub == "vehicles" {
+                                                let filtered: Vec<FleetVehicleItem> = fleet_vehicles
+                                                    .get()
+                                                    .into_iter()
+                                                    .filter(|v| {
+                                                        q.is_empty()
+                                                            || v.truck_id.to_lowercase().contains(&q)
+                                                            || v.license_plate.to_lowercase().contains(&q)
+                                                            || v.model.to_lowercase().contains(&q)
+                                                            || v.assigned_driver.to_lowercase().contains(&q)
+                                                            || v.current_location.to_lowercase().contains(&q)
+                                                            || v.inspection_status.to_lowercase().contains(&q)
+                                                            || v.oil_status.to_lowercase().contains(&q)
+                                                    })
+                                                    .take(80)
+                                                    .collect();
+                                                view! {
+                                                    <div style="display:flex; flex-direction:column; gap:0.55rem; flex:1; min-height:0; overflow-y:auto; padding-right:0.25rem;">
+                                                        {filtered.into_iter().map(|v| {
+                                                            let is_crit = v.km_until_inspection <= 2500 || v.oil_level_percent < 60 || v.brake_wear_percent >= 75;
+                                                            let card_style = if is_crit {
+                                                                "background:rgba(239, 68, 68, 0.08); border:1px solid rgba(239, 68, 68, 0.45); border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap;"
+                                                            } else {
+                                                                "background:rgba(15, 23, 42, 0.6); border:1px solid #334155; border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap;"
+                                                            };
+                                                            view! {
+                                                                <div style=card_style>
+                                                                    <div style="display:flex; flex-direction:column; gap:0.25rem; flex:1; min-width:250px;">
+                                                                        <div style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap;">
+                                                                            <span style="font-family:monospace; font-size:0.75rem; background:#1e293b; color:#38bdf8; padding:0.1rem 0.45rem; border-radius:4px; border:1px solid #334155; font-weight:700;">
+                                                                                {v.truck_id}
+                                                                            </span>
+                                                                            <span style="font-family:monospace; font-size:0.74rem; color:#fde047;">
+                                                                                {format!("[{}]", v.license_plate)}
+                                                                            </span>
+                                                                            <strong style="color:#f8fafc; font-size:0.86rem;">{v.model}</strong>
+                                                                            <span style="font-size:0.75rem; color:#94a3b8;">{format!("· {} ({})", v.vehicle_type, v.emission_class)}</span>
+                                                                        </div>
+                                                                        <div style="font-size:0.74rem; color:#cbd5e1; display:flex; gap:0.7rem; flex-wrap:wrap;">
+                                                                            <span>"👤 " {v.assigned_driver}</span>
+                                                                            <span>"📍 " {v.current_location}</span>
+                                                                            <span>{format!("🛣️ {} km (Inspektion in {} km am {})", v.mileage_km, v.km_until_inspection, v.next_inspection_date)}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div style="display:flex; align-items:center; gap:0.35rem; flex-wrap:wrap; font-size:0.71rem;">
+                                                                        <span style="background:#0f172a; color:#e2e8f0; border:1px solid #334155; padding:0.14rem 0.45rem; border-radius:4px;">
+                                                                            {format!("🛢️ Öl: {}%", v.oil_level_percent)}
+                                                                        </span>
+                                                                        <span style="background:#0f172a; color:#e2e8f0; border:1px solid #334155; padding:0.14rem 0.45rem; border-radius:4px;">
+                                                                            {format!("💧 AdBlue: {}%", v.adblue_level_percent)}
+                                                                        </span>
+                                                                        <span style="background:#0f172a; color:#e2e8f0; border:1px solid #334155; padding:0.14rem 0.45rem; border-radius:4px;">
+                                                                            {format!("🛑 Bremsen: {}%", v.brake_wear_percent)}
+                                                                        </span>
+                                                                        <span style="background:#0f172a; color:#e2e8f0; border:1px solid #334155; padding:0.14rem 0.45rem; border-radius:4px;">
+                                                                            {format!("🛞 {:.1} bar", v.tire_pressure_bar)}
+                                                                        </span>
+                                                                        {v.adr_certified.then(|| view! {
+                                                                            <span style="background:rgba(245,158,11,0.2); color:#fbbf24; border:1px solid #f59e0b; padding:0.12rem 0.45rem; border-radius:4px; font-weight:700;">
+                                                                                "☣️ ADR"
+                                                                            </span>
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }.into_view()
+                                            } else if sub == "tours" {
+                                                let filtered: Vec<FleetTourItem> = fleet_tours
+                                                    .get()
+                                                    .into_iter()
+                                                    .filter(|t| {
+                                                        q.is_empty()
+                                                            || t.tour_id.to_lowercase().contains(&q)
+                                                            || t.truck_id.to_lowercase().contains(&q)
+                                                            || t.license_plate.to_lowercase().contains(&q)
+                                                            || t.driver_name.to_lowercase().contains(&q)
+                                                            || t.month.to_lowercase().contains(&q)
+                                                            || t.origin_city.to_lowercase().contains(&q)
+                                                            || t.destination_city.to_lowercase().contains(&q)
+                                                            || t.customer_name.to_lowercase().contains(&q)
+                                                            || t.cargo_description.to_lowercase().contains(&q)
+                                                            || t.gps_waypoints.iter().any(|w| {
+                                                                w.location_name.to_lowercase().contains(&q)
+                                                                    || w.weather_condition.to_lowercase().contains(&q)
+                                                                    || w.fix_type.to_lowercase().contains(&q)
+                                                            })
+                                                    })
+                                                    .take(80)
+                                                    .collect();
+                                                view! {
+                                                    <div style="display:flex; flex-direction:column; gap:0.55rem; flex:1; min-height:0; overflow-y:auto; padding-right:0.25rem;">
+                                                        {filtered.into_iter().map(|t| {
+                                                            let is_berlin_april = t.destination_city.eq_ignore_ascii_case("berlin") && t.month.to_lowercase().contains("april");
+                                                            let has_gnss_anomaly = t.gps_waypoints.iter().any(|w| w.satellites_used < 4 || w.gps_accuracy_m >= 15.0);
+                                                            let card_style = if has_gnss_anomaly {
+                                                                "background:rgba(239, 68, 68, 0.08); border:1px solid rgba(239, 68, 68, 0.45); border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; flex-direction:column; gap:0.35rem;"
+                                                            } else if is_berlin_april {
+                                                                "background:rgba(16, 185, 129, 0.08); border:1px solid rgba(16, 185, 129, 0.45); border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; flex-direction:column; gap:0.35rem;"
+                                                            } else {
+                                                                "background:rgba(15, 23, 42, 0.6); border:1px solid #334155; border-radius:0.55rem; padding:0.65rem 0.85rem; display:flex; flex-direction:column; gap:0.35rem;"
+                                                            };
+                                                            let tid_for_map = t.tour_id.clone();
+                                                            let tlabel_for_map = format!("{} · {} ({}) · {} ➔ {}", t.tour_id, t.truck_id, t.license_plate, t.origin_city, t.destination_city);
+                                                            let gmap_for_map = t.google_maps_url.clone();
+                                                            let gmap_direct = t.google_maps_url.clone();
+                                                            let waypoints_list = t.gps_waypoints.clone();
+                                                            let wp_cnt = waypoints_list.len();
+                                                            view! {
+                                                                <div style=card_style>
+                                                                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.45rem;">
+                                                                        <div style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap;">
+                                                                            <span style="font-family:monospace; font-size:0.73rem; background:#1e293b; color:#38bdf8; padding:0.1rem 0.4rem; border-radius:4px;">
+                                                                                {t.tour_id.clone()}
+                                                                            </span>
+                                                                            <span style="font-size:0.75rem; color:#a5b4fc; font-weight:600;">
+                                                                                {format!("📅 {} ({})", t.departure_date, t.month)}
+                                                                            </span>
+                                                                            <strong style="color:#f8fafc; font-size:0.84rem;">
+                                                                                {format!("{} ({}) · {}", t.truck_id, t.license_plate, t.driver_name)}
+                                                                            </strong>
+                                                                            <span style="font-size:0.8rem; color:#34d399; font-weight:700;">
+                                                                                {format!("{} ({}) ➔ {} ({})", t.origin_city, t.origin_warehouse_id, t.destination_city, t.destination_warehouse_id)}
+                                                                            </span>
+                                                                            {has_gnss_anomaly.then(|| view! {
+                                                                                <span style="background:rgba(239,68,68,0.22); color:#fca5a5; border:1px solid #ef4444; padding:0.1rem 0.45rem; border-radius:4px; font-size:0.7rem; font-weight:700;">
+                                                                                    "⚠️ 1-Hz GNSS-Drift (< 4 Sat.) & Unwetter"
+                                                                                </span>
+                                                                            })}
+                                                                        </div>
+                                                                        <div style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap;">
+                                                                            <span style="font-size:0.72rem; color:#fde047;">
+                                                                                {format!("🏢 {} · {:.1} t ({} km)", t.customer_name, t.cargo_weight_tons, t.distance_km)}
+                                                                            </span>
+                                                                            <button
+                                                                                type="button"
+                                                                                class="btn btn-secondary"
+                                                                                style="padding:0.22rem 0.58rem; font-size:0.72rem; background:rgba(16,185,129,0.2); border-color:#10b981; color:#6ee7b7; font-weight:600;"
+                                                                                on:click=move |_| {
+                                                                                    set_viewing_tour_map.set(Some((tid_for_map.clone(), tlabel_for_map.clone(), gmap_for_map.clone())));
+                                                                                }
+                                                                            >
+                                                                                "🗺️ OpenStreetMap (1-Hz & Wetter)"
+                                                                            </button>
+                                                                            {(!gmap_direct.is_empty()).then(|| view! {
+                                                                                <a
+                                                                                    href=gmap_direct
+                                                                                    target="_blank"
+                                                                                    rel="noopener noreferrer"
+                                                                                    class="btn btn-secondary"
+                                                                                    style="padding:0.22rem 0.58rem; font-size:0.72rem; background:rgba(37,99,235,0.22); border-color:#3b82f6; color:#93c5fd; text-decoration:none; font-weight:600;"
+                                                                                >
+                                                                                    "🌍 Google Maps ↗️"
+                                                                                </a>
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div style="font-size:0.73rem; color:#94a3b8; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem;">
+                                                                        <span>"📦 " {t.cargo_description} " | 🛣️ " {t.gps_route}</span>
+                                                                        <span style="color:#e2e8f0; font-weight:600;">{t.delivery_status}</span>
+                                                                    </div>
+                                                                    {(wp_cnt > 0).then(|| view! {
+                                                                        <details class="doc-relations-details">
+                                                                            <summary class="doc-relations-summary" style="background:rgba(56,189,248,0.12); border-color:rgba(56,189,248,0.35); color:#7dd3fc;">
+                                                                                <span>{format!("🛰️⛈️ {} GPS-Positionen (1-Hz Uhrzeit · Lat/Lon · Satelliten · HDOP · Genauigkeit ±m · Live-Wetter) anzeigen ▾", wp_cnt)}</span>
+                                                                            </summary>
+                                                                            <div class="doc-relations-list" style="border-color:rgba(56,189,248,0.3); max-height:360px; overflow-y:auto;">
+                                                                                {waypoints_list.into_iter().enumerate().map(|(idx, wp)| {
+                                                                                    let temp_info = wp.temp_c.map(|tc| format!(" · ❄️ Kühlraum: {:.1}°C", tc)).unwrap_or_default();
+                                                                                    let is_bad_gnss = wp.satellites_used < 4 || wp.gps_accuracy_m >= 15.0;
+                                                                                    let gnss_style = if is_bad_gnss {
+                                                                                        "background:rgba(239,68,68,0.22); color:#fca5a5; border:1px solid #ef4444; padding:0.06rem 0.38rem; border-radius:4px; font-size:0.7rem; font-weight:700;"
+                                                                                    } else {
+                                                                                        "background:rgba(16,185,129,0.15); color:#6ee7b7; border:1px solid rgba(16,185,129,0.35); padding:0.06rem 0.38rem; border-radius:4px; font-size:0.7rem;"
+                                                                                    };
+                                                                                    let rain_info = if wp.precipitation_mm_h > 0.0 {
+                                                                                        format!(" · 💧 {:.1} mm/h", wp.precipitation_mm_h)
+                                                                                    } else {
+                                                                                        String::new()
+                                                                                    };
+                                                                                    view! {
+                                                                                        <div class="doc-relation-item" style="flex-wrap:wrap; gap:0.35rem;">
+                                                                                            <span class="rel-icon" style="color:#38bdf8;">{format!("#{}", idx + 1)}</span>
+                                                                                            <span style="font-family:monospace; color:#94a3b8;">{format!("[{}]", wp.timestamp)}</span>
+                                                                                            <span style="font-family:monospace; color:#fde047;">
+                                                                                                {format!("{:.5}°N, {:.5}°E", wp.lat, wp.lon)}
+                                                                                            </span>
+                                                                                            <strong style="color:#f8fafc;">{wp.location_name}</strong>
+                                                                                            <span style=gnss_style>
+                                                                                                {format!("🛰️ {} Sat. · HDOP {:.1} · ±{:.1}m ({})", wp.satellites_used, wp.hdop, wp.gps_accuracy_m, wp.fix_type)}
+                                                                                            </span>
+                                                                                            <span style="background:rgba(56,189,248,0.12); color:#bae6fd; border:1px solid rgba(56,189,248,0.3); padding:0.06rem 0.38rem; border-radius:4px; font-size:0.7rem;">
+                                                                                                {format!("{} ({:.1}°C{} · 💨 {} km/h)", wp.weather_condition, wp.ambient_temp_c, rain_info, wp.wind_speed_kmh)}
+                                                                                            </span>
+                                                                                            <span style="color:#cbd5e1; font-size:0.72rem;">{format!("🚛 {} km/h{}", wp.speed_kmh, temp_info)}</span>
+                                                                                        </div>
+                                                                                    }
+                                                                                }).collect_view()}
+                                                                            </div>
+                                                                        </details>
+                                                                    })}
+                                                                </div>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                let warehouses = fleet_warehouses.get();
+                                                view! {
+                                                    <div style="display:flex; flex-direction:column; gap:0.55rem; flex:1; min-height:0; overflow-y:auto; padding-right:0.25rem;">
+                                                        {warehouses.into_iter().map(|w| {
+                                                            view! {
+                                                                <div style="background:rgba(15, 23, 42, 0.6); border:1px solid #334155; border-radius:0.55rem; padding:0.7rem 0.9rem; display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+                                                                    <div style="display:flex; flex-direction:column; gap:0.25rem; flex:1;">
+                                                                        <div style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap;">
+                                                                            <span style="font-family:monospace; font-size:0.75rem; background:#1e293b; color:#c084fc; padding:0.1rem 0.45rem; border-radius:4px; border:1px solid #334155; font-weight:700;">
+                                                                                {w.warehouse_id}
+                                                                            </span>
+                                                                            <strong style="color:#f8fafc; font-size:0.88rem;">{w.name}</strong>
+                                                                            <span style="font-size:0.76rem; color:#38bdf8;">{format!("📍 {} ({})", w.city, w.gps_coords)}</span>
+                                                                        </div>
+                                                                        <div style="font-size:0.74rem; color:#94a3b8;">
+                                                                            {format!("🏗️ {} · 📦 {} Paletten ({}% Auslastung) · 👤 Leitung: {}", w.storage_type, w.capacity_pallets, w.utilization_percent, w.manager_name)}
+                                                                        </div>
+                                                                        <div style="font-size:0.72rem; color:#cbd5e1;">
+                                                                            "⚠️ " {w.restrictions}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }.into_view()
+                                            }
+                                        }}
+                                    </div>
+                                }.into_view()
                             } else {
                                 view! { <div></div> }.into_view()
                             }}
@@ -3561,12 +4211,11 @@ fn App() -> impl IntoView {
             }
         })}
 
-            // --- Modal-Dialog: Generische LLM-, Remote-GPU- (RunPod) & Cloud-Konfiguration ---
+            // --- Modal-Dialog: Generische LLM-, Remote-GPU- (RunPod) & Cloud-Konfiguration (Immer im Focus Screen / Vollbild) ---
             {move || show_llm_modal.get().then(|| view! {
-                <div class="modal-backdrop" on:click=move |_| set_show_llm_modal.set(false)>
+                <div class="modal-backdrop fullscreen" on:click=move |_| set_show_llm_modal.set(false)>
                     <div
-                        class="modal-dialog"
-                        style="max-width: 660px;"
+                        class="modal-dialog fullscreen"
                         on:click=move |ev| ev.stop_propagation()
                     >
                         <div class="modal-header">
@@ -3818,12 +4467,28 @@ fn App() -> impl IntoView {
                             </div>
 
                             // --- Sektion B: LLM-Server, Remote-GPU & Cloud ---
-                            <div style="font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8; margin-top: 0.15rem;">
-                                {move || if is_en() {
-                                    "🤖 Language Model (Local, RunPod GPU or Cloud API)"
-                                } else {
-                                    "🤖 Sprachmodell (Lokal, RunPod GPU oder Cloud-API)"
-                                }}
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; background: rgba(30, 41, 59, 0.65); border: 1px solid #475569; border-radius: 0.65rem; padding: 0.65rem 0.9rem; margin-top: 0.15rem;">
+                                <div style="font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
+                                    {move || if is_en() {
+                                        "🤖 Language Model (Local, RunPod GPU or Cloud API)"
+                                    } else {
+                                        "🤖 Sprachmodell (Lokal, RunPod GPU oder Cloud-API)"
+                                    }}
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 0.45rem; background: linear-gradient(135deg, rgba(79, 70, 229, 0.35), rgba(2, 132, 199, 0.35)); border: 1.5px solid #38bdf8; box-shadow: 0 0 12px rgba(56, 189, 248, 0.35); color: #f8fafc; padding: 0.28rem 0.75rem; border-radius: 999px; font-size: 0.8rem; font-weight: 700;">
+                                    <span style="color: #34d399;">"●"</span>
+                                    <span>
+                                        {move || {
+                                            let m = llm_model_sig.get();
+                                            let p = llm_provider_sig.get();
+                                            if is_en() {
+                                                format!("Selected LLM: {} ({})", m, p)
+                                            } else {
+                                                format!("Aktuelles LLM: {} ({})", m, p)
+                                            }
+                                        }}
+                                    </span>
+                                </div>
                             </div>
 
                             // Schnell-Vorlagen (Presets)
@@ -3838,7 +4503,15 @@ fn App() -> impl IntoView {
                                 <div style="display:flex; flex-wrap:wrap; gap:0.45rem;">
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                        style=move || {
+                                            let u = llm_base_url_sig.get();
+                                            let p = llm_provider_sig.get();
+                                            if p != "none" && (u.contains("11434") || p == "ollama") {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
+                                            } else {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                            }
+                                        }
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("openai_compatible".to_string());
                                             set_llm_base_url_sig.set("http://host.docker.internal:11434/v1".to_string());
@@ -3854,7 +4527,14 @@ fn App() -> impl IntoView {
                                     </button>
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                        style=move || {
+                                            let u = llm_base_url_sig.get();
+                                            if u.contains("runpod.net") || u.contains(":8000") {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
+                                            } else {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                            }
+                                        }
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("openai_compatible".to_string());
                                             set_llm_base_url_sig.set("https://DEINE-POD-ID-8000.proxy.runpod.net/v1".to_string());
@@ -3869,7 +4549,13 @@ fn App() -> impl IntoView {
                                     </button>
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                        style=move || {
+                                            if llm_base_url_sig.get().contains("api.openai.com") {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
+                                            } else {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                            }
+                                        }
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("openai_compatible".to_string());
                                             set_llm_base_url_sig.set("https://api.openai.com/v1".to_string());
@@ -3890,7 +4576,15 @@ fn App() -> impl IntoView {
                                     </button>
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                        style=move || {
+                                            let u = llm_base_url_sig.get();
+                                            let p = llm_provider_sig.get();
+                                            if u.contains("googleapis.com") || p == "gemini_native" {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
+                                            } else {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                            }
+                                        }
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("openai_compatible".to_string());
                                             set_llm_base_url_sig.set("https://generativelanguage.googleapis.com/v1beta/openai".to_string());
@@ -3911,7 +4605,15 @@ fn App() -> impl IntoView {
                                     </button>
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                        style=move || {
+                                            let u = llm_base_url_sig.get();
+                                            let p = llm_provider_sig.get();
+                                            if u.contains("anthropic.com") || p == "anthropic" {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
+                                            } else {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                            }
+                                        }
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("anthropic".to_string());
                                             set_llm_base_url_sig.set("https://api.anthropic.com/v1".to_string());
@@ -3932,7 +4634,13 @@ fn App() -> impl IntoView {
                                     </button>
                                     <button
                                         class="btn btn-secondary"
-                                        style="padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                        style=move || {
+                                            if llm_provider_sig.get() == "none" {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
+                                            } else {
+                                                "padding:0.35rem 0.65rem; font-size:0.76rem;"
+                                            }
+                                        }
                                         on:click=move |_| {
                                             set_llm_provider_sig.set("none".to_string());
                                             set_llm_model_sig.set("none".to_string());
@@ -4087,7 +4795,10 @@ fn App() -> impl IntoView {
                                                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                                                         let models: Vec<String> = serde_json::from_value(json["available_models"].clone()).unwrap_or_default();
                                                         if !models.is_empty() {
-                                                            set_llm_model_sig.set(models[0].clone());
+                                                            let cur = llm_model_sig.get_untracked();
+                                                            if !models.iter().any(|m| m.trim().eq_ignore_ascii_case(cur.trim())) {
+                                                                set_llm_model_sig.set(models[0].clone());
+                                                            }
                                                             set_available_models.set(models.clone());
                                                             set_llm_config_status.set(format!("✅ {} Modell(e) geladen!", models.len()));
                                                         } else {
@@ -4118,9 +4829,18 @@ fn App() -> impl IntoView {
                                 />
 
                                 // Klickbare Chips für alle gefundenen / vorgeschlagenen Modelle
-                                <div style="display:flex; flex-wrap:wrap; gap:0.35rem; margin-top:0.5rem; max-height:110px; overflow-y:auto;">
+                                <div style="display:flex; flex-wrap:wrap; gap:0.45rem; margin-top:0.55rem; max-height:130px; overflow-y:auto; padding:0.2rem 0.1rem;">
                                     <For
-                                        each=move || available_models.get()
+                                        each=move || {
+                                            let mut list = available_models.get();
+                                            let cur = llm_model_sig.get();
+                                            if !cur.trim().is_empty()
+                                                && !list.iter().any(|m| m.trim().eq_ignore_ascii_case(cur.trim()))
+                                            {
+                                                list.insert(0, cur);
+                                            }
+                                            list
+                                        }
                                         key=|m| m.clone()
                                         children=move |m| {
                                             let m_click = m.clone();
@@ -4128,14 +4848,31 @@ fn App() -> impl IntoView {
                                             let m_label = m.clone();
                                             view! {
                                                 <button
-                                                    style=move || if llm_model_sig.get() == m_check {
-                                                        "background:#4f46e5; color:#fff; border:1px solid #818cf8; border-radius:0.35rem; padding:0.2rem 0.55rem; font-size:0.75rem; cursor:pointer; font-weight:600;"
-                                                    } else {
-                                                        "background:#0f172a; color:#cbd5e1; border:1px solid #334155; border-radius:0.35rem; padding:0.2rem 0.55rem; font-size:0.75rem; cursor:pointer;"
+                                                    type="button"
+                                                    style=move || {
+                                                        let is_selected = llm_model_sig
+                                                            .get()
+                                                            .trim()
+                                                            .eq_ignore_ascii_case(m_check.trim());
+                                                        if is_selected {
+                                                            "background: linear-gradient(135deg, #4f46e5, #0284c7); color: #ffffff; border: 2px solid #38bdf8; box-shadow: 0 0 12px rgba(56, 189, 248, 0.5); border-radius: 0.45rem; padding: 0.32rem 0.78rem; font-size: 0.8rem; cursor: pointer; font-weight: 700; display: inline-flex; align-items: center; gap: 0.38rem; transition: all 0.15s ease;"
+                                                        } else {
+                                                            "background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 0.45rem; padding: 0.32rem 0.72rem; font-size: 0.78rem; cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; gap: 0.35rem; transition: all 0.15s ease;"
+                                                        }
                                                     }
                                                     on:click=move |_| set_llm_model_sig.set(m_click.clone())
                                                 >
-                                                    {m_label}
+                                                    {move || {
+                                                        let is_selected = llm_model_sig
+                                                            .get()
+                                                            .trim()
+                                                            .eq_ignore_ascii_case(m_label.trim());
+                                                        if is_selected {
+                                                            format!("🟢 ✓ {}", m_label)
+                                                        } else {
+                                                            format!("🤖 {}", m_label)
+                                                        }
+                                                    }}
                                                 </button>
                                             }
                                         }
@@ -4264,6 +5001,118 @@ fn App() -> impl IntoView {
                         </div>
                     </div>
                 </div>
+            })}
+
+            // --- Modal-Dialog: Integrierter Fullscreen PDF-Viewer ---
+            {move || viewing_pdf_doc.get().map(|(pdf_doc_id, pdf_doc_title)| {
+                let pdf_url = format!("/v1/documents/{}/file", pdf_doc_id);
+                let pdf_url_tab = pdf_url.clone();
+                view! {
+                    <div
+                        class="modal-backdrop fullscreen"
+                        style="z-index: 1200;"
+                        on:click=move |_| set_viewing_pdf_doc.set(None)
+                    >
+                        <div
+                            class="modal-dialog fullscreen"
+                            on:click=move |ev| ev.stop_propagation()
+                        >
+                            <div class="modal-header">
+                                <h2 style="display:flex; align-items:center; gap:0.55rem;">
+                                    <span>"📄"</span>
+                                    <span>{pdf_doc_title}</span>
+                                    <span style="font-size:0.75rem; font-family:monospace; color:#64748b; font-weight:400;">
+                                        {format!("({})", pdf_doc_id)}
+                                    </span>
+                                </h2>
+                                <div style="display:flex; align-items:center; gap:0.55rem;">
+                                    <a
+                                        href=pdf_url_tab
+                                        target="_blank"
+                                        class="btn btn-secondary"
+                                        style="padding: 0.35rem 0.75rem; font-size: 0.8rem; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem;"
+                                    >
+                                        {move || if is_en() { "↗️ Open in New Tab" } else { "↗️ In neuem Tab öffnen" }}
+                                    </a>
+                                    <button
+                                        class="btn btn-secondary"
+                                        style="padding: 0.35rem 0.75rem; font-size: 0.8rem;"
+                                        on:click=move |_| set_viewing_pdf_doc.set(None)
+                                    >
+                                        {move || if is_en() { "✕ Close PDF" } else { "✕ PDF schließen" }}
+                                    </button>
+                                </div>
+                            </div>
+                            <div style="flex:1; width:100%; height:100%; background:#0f172a; display:flex; flex-direction:column; overflow:hidden;">
+                                <iframe
+                                    src=pdf_url
+                                    style="width:100%; height:100%; flex:1; border:none; background:#1e293b;"
+                                    title="PDF Document Viewer"
+                                ></iframe>
+                            </div>
+                        </div>
+                    </div>
+                }
+            })}
+
+            // --- Modal-Dialog: Integrierter Fullscreen OpenStreetMap GPS-Tour-Viewer ---
+            {move || viewing_tour_map.get().map(|(map_tour_id, map_tour_title, gmaps_url)| {
+                let osm_url = format!("/v1/fleet/tours/{}/map", map_tour_id);
+                let osm_url_tab = osm_url.clone();
+                view! {
+                    <div
+                        class="modal-backdrop fullscreen"
+                        style="z-index: 1250;"
+                        on:click=move |_| set_viewing_tour_map.set(None)
+                    >
+                        <div
+                            class="modal-dialog fullscreen"
+                            on:click=move |ev| ev.stop_propagation()
+                        >
+                            <div class="modal-header">
+                                <h2 style="display:flex; align-items:center; gap:0.55rem;">
+                                    <span>"🗺️"</span>
+                                    <span>"OpenStreetMap GPS-Tour: " {map_tour_title}</span>
+                                </h2>
+                                <div style="display:flex; align-items:center; gap:0.55rem;">
+                                    {(!gmaps_url.is_empty()).then(|| view! {
+                                        <a
+                                            href=gmaps_url
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            class="btn"
+                                            style="padding: 0.35rem 0.8rem; font-size: 0.8rem; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);"
+                                        >
+                                            "🌍 In Google Maps öffnen ↗️"
+                                        </a>
+                                    })}
+                                    <a
+                                        href=osm_url_tab
+                                        target="_blank"
+                                        class="btn btn-secondary"
+                                        style="padding: 0.35rem 0.75rem; font-size: 0.8rem; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem;"
+                                    >
+                                        "↗️ Karte in neuem Tab"
+                                    </a>
+                                    <button
+                                        class="btn btn-secondary"
+                                        style="padding: 0.35rem 0.75rem; font-size: 0.8rem;"
+                                        on:click=move |_| set_viewing_tour_map.set(None)
+                                    >
+                                        "✕ Karte schließen"
+                                    </button>
+                                </div>
+                            </div>
+                            <div style="flex:1; width:100%; height:100%; background:#0f172a; display:flex; flex-direction:column; overflow:hidden;">
+                                <iframe
+                                    src=osm_url
+                                    style="width:100%; height:100%; flex:1; border:none; background:#0b0f19;"
+                                    title="OpenStreetMap GPS Tour Viewer"
+                                ></iframe>
+                            </div>
+                        </div>
+                    </div>
+                }
             })}
         </div>
     }

@@ -13,5 +13,6 @@ logs/
 .git/
 .DS_Store
 
-# Large documents / PDFs in the repository root
+# Large documents / PDFs in the repository root & Showcase PDF folders (only Showcase/**/src/*.rs is needed for Rust compilation)
 *.pdf
+Showcase/**/documents

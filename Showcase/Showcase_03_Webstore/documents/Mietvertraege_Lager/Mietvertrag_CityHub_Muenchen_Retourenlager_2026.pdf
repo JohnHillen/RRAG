@@ -1,0 +1,101 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1926 >>
+stream
+BT
+/F1 15 Tf
+45 775 Td
+(Miet- & Dienstleistungsvertrag: City-Hub & Retourenlager Muenchen-Ost \(WH-MUC\)) Tj
+/F2 10 Tf
+0 -22 Td
+0 -6 Td
+/F1 11 Tf
+(1. Mietobjekt & Vertragspartner) Tj
+/F2 10 Tf
+0 -14 Td
+(Vermieter & Betreiber: Bavaria GewerbePark & Fulfillment GmbH, Riemer Strasse 290, 81829) Tj
+0 -13 Td
+(Muenchen) Tj
+0 -13 Td
+(Mieter: HanseTech Smart-Living Webstore GmbH) Tj
+0 -13 Td
+(Vertragsnummer: LEASE-WH-MUC-2026) Tj
+0 -13 Td
+(Lager-Standortkennung in der Datenbank \(warehouse_location\): 'Muenchen-Ost \(WH-MUC\)') Tj
+0 -13 Td
+(Nutzungszweck: Sueddeutschland-Versand \(Kaffee & Smart Home\),) Tj
+0 -13 Td
+(Lithium-Akku-Sicherheitslager & Retouren-Zentrum) Tj
+0 -13 Td
+0 -8 Td
+0 -6 Td
+/F1 11 Tf
+(2. Mietzins & Paletten-Kontingent \(Maximal 80 Paletten inklusive\)) Tj
+/F2 10 Tf
+0 -14 Td
+(* Monatliche Grundmiete: 2800.00 EUR pro Monat inklusive bis zu 80 belegten) Tj
+0 -13 Td
+(Palettenplaetzen \(occupied_pallets\).) Tj
+0 -13 Td
+(* Zusatzpalette ueber 80 Paletten: 20.00 EUR pro Palette und Monat.) Tj
+0 -13 Td
+0 -8 Td
+0 -6 Td
+/F1 11 Tf
+(3. VdS-Zertifizierung fuer Lithium-Ionen-Akkus \(Bis 1500 Einheiten\)) Tj
+/F2 10 Tf
+0 -14 Td
+(* Das Lager Muenchen-Ost \(WH-MUC\) verfuegt ueber eine VdS-zertifizierte Brandschutz-) Tj
+0 -13 Td
+(und Quarantaenezone und darf bis zu 1500 Artikel-Einheiten mit Lithium-Ionen-Akku) Tj
+0 -13 Td
+(\(contains_lithium_battery = true\) aufnehmen.) Tj
+0 -13 Td
+(* Es dient daher als offizielles Ausweichlager, falls in Hamburg-Billbrook \(WH-HAM\)) Tj
+0 -13 Td
+(die 600-Stueck-Grenze fuer Lithium-Akku-Artikel ueberschritten wird.) Tj
+0 -13 Td
+0 -8 Td
+0 -6 Td
+/F1 11 Tf
+(4. Retouren-Abwicklung & Pruefpauschale \(6.50 EUR pro Retoure\)) Tj
+/F2 10 Tf
+0 -14 Td
+(* Alle Kundenretouren des Webstores werden zentral in Muenchen-Ost geprueft und) Tj
+0 -13 Td
+(wiederaufbereitet.) Tj
+0 -13 Td
+(* Pro retournierter Einheit berechnet der Betreiber 6.50 EUR Refurbishment-Gebuehr.) Tj
+0 -13 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 595 842] /Contents 1 0 R /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001986 00000 n 
+0000002061 00000 n 
+0000002131 00000 n 
+0000002267 00000 n 
+0000002324 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+2373
+%%EOF

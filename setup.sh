@@ -33,6 +33,7 @@ SHOW_STATUS=false
 RESET_DB=false
 EXPORT_FILE=""
 IMPORT_FILE=""
+SHOWCASE_ARG=""
 
 usage() {
     cat <<EOF
@@ -80,7 +81,14 @@ PORT CONFIGURATION (Auto-fallback to next free port if occupied):
   --rerank-port <num>    Sets port for TEI Reranker High (Default: 8082).
   --rerank-fast-port <num> Sets port for TEI Reranker Fast (Default: 8083).
 
-MANAGEMENT, BACKUP & MAINTENANCE:
+MANAGEMENT, BACKUP & SHOWCASES:
+  --showcase <name>      Loads a specific Showcase dataset (PDFs + SQL tables):
+                         • list                        (Lists all Showcase/Showcase_XX_* folders)
+                         • 1 | hr | Showcase_01_HR_Consulting (Consulting, BMW/Siemens SLAs & 3,000 HR Records)
+                         • 2 | spedition | Showcase_02_Spedition (Fleet, 120 Trucks, 232 GPS Tours Mar/Apr & 5 Warehouses)
+                         • 3 | webstore | Showcase_03_Webstore (Multi-DB: Internal Contracts + External Webstore ERP)
+                         • none                        (Clears all showcase data -> empty database)
+                         (By default on './setup.sh', NO showcase is loaded!)
   --export [file.surql]  Exports complete SurrealDB (documents, chunks,
                          1024d vectors & graph relations) into a backup file
                          (Default: backup_surrealdb.surql).
@@ -175,6 +183,15 @@ while [[ $# -gt 0 ]]; do
                 shift 2
             else
                 IMPORT_FILE="backup_surrealdb.surql"
+                shift
+            fi
+            ;;
+        --showcase)
+            if [[ $# -ge 2 && ! "$2" =~ ^-- ]]; then
+                SHOWCASE_ARG="$2"
+                shift 2
+            else
+                SHOWCASE_ARG="list"
                 shift
             fi
             ;;
@@ -299,6 +316,137 @@ if [[ "$SHOW_STATUS" == "true" ]]; then
         echo -e "  • Local Ollama (Port 11434)  : ${YELLOW}UNREACHABLE${NC}"
     fi
     exit 0
+fi
+
+list_showcases() {
+    echo -e "${BLUE}=== Available Showcases in ./Showcase/ ===${NC}"
+    echo -e "  1) ${GREEN}Showcase_01_HR_Consulting${NC}  (--showcase 1 | --showcase hr | --showcase Showcase_01_HR_Consulting)"
+    echo -e "     • Unstructured PDFs: 7 files (Client SLAs BMW/Siemens, Project Docs Alpha/Titan, HR Profiles)"
+    echo -e "     • Structured SQL DB: 3,000 Employee Records (300 Full Matches, 150 Training Gap Candidates)"
+    echo -e "     • Guide            : Showcase/Showcase_01_HR_Consulting/SHOWCASE.md"
+    echo -e ""
+    echo -e "  2) ${GREEN}Showcase_02_Spedition${NC}      (--showcase 2 | --showcase spedition | --showcase Showcase_02_Spedition)"
+    echo -e "     • Unstructured PDFs: 6 files (BioPharma Cold-Chain SLA, ChemCorp ADR SLA, NordFrost SLA, Fleet Maintenance Policy, Warehouse Manual, April Audit Report)"
+    echo -e "     • Structured SQL DB: 120 Heavy-Duty Trucks (CAN-Bus Telemetry: Mileage, Inspection, Oil, Brakes, Tires, ADR) + 232 GPS Tours (March & April 2026) + 5 Warehouses"
+    echo -e "     • Guide            : Showcase/Showcase_02_Spedition/SHOWCASE.md"
+    echo -e ""
+    echo -e "  3) ${GREEN}Showcase_03_Webstore${NC}       (--showcase 3 | --showcase webstore | --showcase Showcase_03_Webstore)"
+    echo -e "     • Internal DB (PDFs + SQL) : 6 Contract PDFs (Supplier SLAs, Marketing Contracts, Warehouse Leases) + internal_contract_ledger"
+    echo -e "     • External DB (Webstore)   : Isolated 'webstore_external / shop_erp' DB with 12 Products (shop_product) & 14 Sales Batches (shop_sale)"
+    echo -e "     • Guide                    : Showcase/Showcase_03_Webstore/SHOWCASE.md"
+    echo -e ""
+    echo -e "  0) ${YELLOW}none / clear${NC}               (--showcase none)"
+    echo -e "     • Clears all showcase PDFs and structured tables (clean empty state)."
+}
+
+load_showcase_into_running_stack() {
+    local sc_arg="$1"
+    local orch_port="${ORCHESTRATOR_PORT:-8080}"
+    local sc_lower
+    sc_lower=$(echo "$sc_arg" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$sc_lower" == "list" ]]; then
+        list_showcases
+        return 0
+    fi
+
+    echo -e "\n${BLUE}=== Showcase Loader (--showcase ${sc_arg}) ===${NC}"
+    # Wait up to 20s for Orchestrator health
+    for _ in {1..20}; do
+        if curl -sf "http://localhost:${orch_port}/health" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+
+    if ! curl -sf "http://localhost:${orch_port}/health" > /dev/null 2>&1; then
+        echo -e "${RED}[ERROR] Orchestrator at http://localhost:${orch_port} is not reachable.${NC}"
+        return 1
+    fi
+
+    if [[ "$sc_lower" == "none" || "$sc_lower" == "clear" || "$sc_lower" == "0" ]]; then
+        echo -e "${YELLOW}Resetting all showcase documents and SQL tables...${NC}"
+        curl -sf -X POST "http://localhost:${orch_port}/v1/showcase/reset" > /dev/null
+        echo -e "${GREEN}[OK] All showcase data cleared. Knowledge base is now empty.${NC}"
+        return 0
+    fi
+
+    local target_folder=""
+    local sc_mode=""
+    if [[ "$sc_lower" == "1" || "$sc_lower" == "01" || "$sc_lower" == "hr" || "$sc_lower" == "consulting" || "$sc_lower" == *"showcase_01"* ]]; then
+        target_folder="Showcase/Showcase_01_HR_Consulting"
+        sc_mode="hr"
+    elif [[ "$sc_lower" == "2" || "$sc_lower" == "02" || "$sc_lower" == "spedition" || "$sc_lower" == "fleet" || "$sc_lower" == "logistik" || "$sc_lower" == *"showcase_02"* ]]; then
+        target_folder="Showcase/Showcase_02_Spedition"
+        sc_mode="fleet"
+    elif [[ "$sc_lower" == "3" || "$sc_lower" == "03" || "$sc_lower" == "webstore" || "$sc_lower" == "shop" || "$sc_lower" == *"showcase_03"* ]]; then
+        target_folder="Showcase/Showcase_03_Webstore"
+        sc_mode="webstore"
+    else
+        echo -e "${RED}[ERROR] Unknown showcase '${sc_arg}'.${NC}"
+        list_showcases
+        return 1
+    fi
+
+    echo -e "${BLUE}[1/3] Clearing previous showcase data in SurrealDB...${NC}"
+    curl -sf -X POST "http://localhost:${orch_port}/v1/showcase/reset" > /dev/null
+
+    echo -e "${BLUE}[2/3] Ingesting PDF documents from ${target_folder}/documents/ ...${NC}"
+    local pdf_count=0
+    while IFS= read -r -d '' pdf_file; do
+        local rel_path="${pdf_file#${target_folder}/documents/}"
+        local category=""
+        if [[ "$rel_path" == */* ]]; then
+            category="${rel_path%%/*}"
+        fi
+        local fname
+        fname=$(basename "$pdf_file")
+        echo -e "  • Uploading [${category}] ${fname} ..."
+        curl -sf -X POST "http://localhost:${orch_port}/v1/ingest/file" \
+            -F "category=${category}" \
+            -F "replace_revision=true" \
+            -F "extract_graph=false" \
+            -F "file=@${pdf_file}" > /dev/null
+        pdf_count=$((pdf_count + 1))
+    done < <(find "${target_folder}/documents" -type f -name "*.pdf" -print0 | sort -z)
+    echo -e "${GREEN}[OK] Ingested ${pdf_count} PDF document(s) into SurrealDB vector & BM25 index.${NC}"
+
+    if [[ "$sc_mode" == "hr" ]]; then
+        echo -e "${BLUE}[3/3] Seeding structured HR/CRM database (3,000 Employees, 300 Full Matches, 150 Near-Matches)...${NC}"
+        curl -sf -X POST "http://localhost:${orch_port}/v1/crm/seed" \
+            -H "Content-Type: application/json" \
+            -d '{"count": 3000}' > /dev/null
+        echo -e "${GREEN}[OK] Showcase 01 (HR & Consulting - 3,000 Employees) loaded!${NC}"
+        echo -e "  📖 Guide: ${BLUE}${target_folder}/SHOWCASE.md${NC}"
+    elif [[ "$sc_mode" == "fleet" ]]; then
+        echo -e "${BLUE}[3/3] Seeding structured Spedition database (120 Trucks, 232 GPS Tours Mar/Apr, 5 Warehouses)...${NC}"
+        curl -sf -X POST "http://localhost:${orch_port}/v1/fleet/seed" \
+            -H "Content-Type: application/json" \
+            -d '{"truck_count": 120}' > /dev/null
+        echo -e "${GREEN}[OK] Showcase 02 (Spedition, 120 LKWs & 232 GPS-Touren) loaded!${NC}"
+        echo -e "  📖 Guide: ${BLUE}${target_folder}/SHOWCASE.md${NC}"
+    elif [[ "$sc_mode" == "webstore" ]]; then
+        echo -e "${BLUE}[3/3] Seeding Showcase 03 across Internal DB (internal_contract_ledger) & External DB (shop_product + shop_sale)...${NC}"
+        curl -sf -X POST "http://localhost:${orch_port}/v1/webstore/seed" \
+            -H "Content-Type: application/json" \
+            -d '{}' > /dev/null
+        echo -e "${GREEN}[OK] Showcase 03 (Webstore Multi-DB: Interne Vertrags-DB + Externe Shop-DB) loaded!${NC}"
+        echo -e "  📖 Guide: ${BLUE}${target_folder}/SHOWCASE.md${NC}"
+    fi
+}
+
+if [[ "$SHOWCASE_ARG" == "list" ]]; then
+    list_showcases
+    exit 0
+fi
+
+# Fast-path: If stack is already running and user only passed --showcase <name>, switch showcase immediately!
+if [[ -n "$SHOWCASE_ARG" && -z "$MODE" && -z "$PRESET" && -z "$LLM_MODEL_ARG" && -z "$LLM_PROVIDER_ARG" && -z "$LLM_URL_ARG" ]]; then
+    [[ -f .env ]] && source .env
+    if curl -sf "http://localhost:${ORCHESTRATOR_PORT:-8080}/health" > /dev/null 2>&1 && curl -sf "http://localhost:${TEI_EMBED_PORT:-8081}/health" > /dev/null 2>&1; then
+        load_showcase_into_running_stack "$SHOWCASE_ARG"
+        exit 0
+    fi
 fi
 
 echo -e "${BLUE}==============================================================================${NC}"
@@ -776,3 +924,17 @@ echo -e "  • File Upload (PDF/MD/TXT) : POST http://localhost:${ORCHESTRATOR_P
 echo -e "  • Hybrid + Graph Retrieval : POST http://localhost:${ORCHESTRATOR_PORT}/v1/retrieve"
 echo -e "  • OpenAI-compatible Chat   : POST http://localhost:${ORCHESTRATOR_PORT}/v1/chat/completions"
 echo -e "  • MCP Server (Tool Calls)  : POST http://localhost:${ORCHESTRATOR_PORT}/mcp"
+
+# 8. Handle Showcase loading (By default NO showcase is loaded at startup unless --showcase <name> is passed)
+if [[ -n "$SHOWCASE_ARG" ]]; then
+    load_showcase_into_running_stack "$SHOWCASE_ARG"
+else
+    curl -sf -X DELETE "http://localhost:${ORCHESTRATOR_PORT}/v1/crm/employees" > /dev/null 2>&1 || true
+    curl -sf -X DELETE "http://localhost:${ORCHESTRATOR_PORT}/v1/fleet/overview" > /dev/null 2>&1 || true
+    echo -e "\n${BLUE}[SHOWCASE] No showcase loaded by default (clean startup).${NC}"
+    echo -e "  To load a showcase anytime, run:"
+    echo -e "    • ${GREEN}./setup.sh --showcase list${NC}       (List available showcases in ./Showcase/)"
+    echo -e "    • ${GREEN}./setup.sh --showcase 1${NC}          (Load Showcase_01_HR_Consulting)"
+    echo -e "    • ${GREEN}./setup.sh --showcase 2${NC}          (Load Showcase_02_Spedition)"
+    echo -e "    • ${GREEN}./setup.sh --showcase 3${NC}          (Load Showcase_03_Webstore Multi-DB)"
+fi

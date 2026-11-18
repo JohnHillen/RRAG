@@ -1,6 +1,6 @@
-# 🦀 100% Rust RAG & GraphRAG Pipeline (SurrealDB + Hugging Face TEI + Axum + Leptos WASM)
+# 🦀 100% Rust RAG, GraphRAG & Dynamic Text-to-SurrealQL Pipeline (SurrealDB + Hugging Face TEI + Axum + Leptos WASM)
 
-A self-hosted, enterprise-grade **RAG & GraphRAG pipeline** written **100% in Rust** (`SurrealDB 4.0`, `Hugging Face TEI`, `Axum`, and a `Leptos WebAssembly` Chat & Knowledge Studio UI).
+A self-hosted, enterprise-grade **RAG, GraphRAG & Dynamic Text-to-SurrealQL pipeline** written **100% in Rust** (`SurrealDB 4.0`, `Hugging Face TEI`, `Axum`, and a `Leptos WebAssembly` Chat & Knowledge Studio UI).
 
 It runs via **Docker Compose** (supporting **Apple Silicon Metal GPU**, **NVIDIA CUDA GPU**, or **pure CPU**) and requires zero external cloud dependencies—while offering a live runtime configuration UI to connect **local LLMs** (`Ollama`, `vLLM`, `llama.cpp`, `LM Studio`), **remote GPU pods** (`RunPod`), or **Cloud APIs** (`OpenAI`, `Google Gemini`, `Anthropic Claude`).
 
@@ -9,17 +9,19 @@ It runs via **Docker Compose** (supporting **Apple Silicon Metal GPU**, **NVIDIA
 ## ✨ Key Features
 
 - **100% Rust End-to-End Stack**:
-  - **Database**: `SurrealDB 4.0` (`SurrealKV`) combining **HNSW Vector Search**, **BM25 Full-Text Search** (German & English Snowball stemming), **Reciprocal Rank Fusion (RRF)**, and native **Knowledge Graph traversal** (`->mentions->entity->relates_to->entity`) in a single query.
+  - **Database**: `SurrealDB 4.0` (`SurrealKV`) combining **HNSW Vector Search**, **BM25 Full-Text Search** (German & English Snowball stemming), **Reciprocal Rank Fusion (RRF)**, native **Knowledge Graph traversal** (`->mentions->entity->relates_to->entity`), and **Structured SQL Analytics** in a single engine.
+  - **Dynamic Text-to-SurrealQL Engine (`text_to_sql.rs`)**: Automatically bridges unstructured PDF documents (Hop 1: customer SLAs, contracts, guidelines) with structured database tables (Hop 2: CRM/HR records, fleet telemetry, GPS tours). The LLM dynamically translates natural language questions into read-only SurrealQL `SELECT` queries (`WHERE`, `GROUP BY`, `math::sum()`, `math::mean()`, `count()`, `ORDER BY`) with automatic SQL-to-SurrealQL normalization, `OMIT gps_waypoints` context-window protection, and 1-step syntax self-correction.
   - **Inference**: `Hugging Face Text Embeddings Inference (TEI)` for high-throughput dense embeddings (`BAAI/bge-m3`, 1024d) and dual Cross-Encoder Rerankers (`mmarco-mMiniLMv2-L12` Fast & `BAAI/bge-reranker-v2-m3` High).
-  - **Orchestrator**: `Axum` + `Tokio` backend with real-time token streaming (`/v1/chat/stream`), OpenAI-compatible `/v1/chat/completions`, and a built-in **MCP Server** (`/mcp`).
+  - **Orchestrator**: Modular `Axum` + `Tokio` backend with real-time token streaming (`/v1/chat/stream`), OpenAI-compatible `/v1/chat/completions`, and a built-in **MCP Server** (`/mcp`).
   - **Frontend**: `Leptos` Client-Side Rendered **WebAssembly (WASM)** single-page application compiled via `Trunk`.
 - **Modern Leptos WASM Chat & Knowledge Studio**:
-  - **Multi-Chat Session Management**: Create, switch, clear, and delete multiple independent conversations persisted in browser `localStorage`.
+  - **Multi-Chat Session Management & Markdown Export**: Create, switch, export (`.md`), clear, and delete multiple independent conversations persisted in browser `localStorage`.
   - **Bilingual UI (`🇩🇪 Deutsch` / `🇬🇧 English`)**: Instant language toggle inside the Settings dialog.
   - **Document Ingestion & Automatic OCR**: Multi-file upload for digital & scanned PDFs (3-stage extraction: `pdftotext` -> `pdf-extract` -> automatic `pdftoppm` + `Tesseract OCR`), Markdown, HTML, and plain text.
   - **Content-Hash Deduplication & Revision Control**: 128-bit content hashing prevents duplicate indexing and automatically replaces older revisions of updated documents.
   - **Ephemeral Chat Attachments (`📎`)**: Attach PDFs or text files in-memory for a single conversation without storing them in SurrealDB.
-  - **Live LLM & Cloud Configuration**: Switch between local `Ollama`, `RunPod vLLM`, `OpenAI`, `Google Gemini`, and `Anthropic Claude` at runtime—including live model discovery from the target server.
+  - **Interactive 1-Hz GPS Telemetry & Weather Map (`Leaflet.js` / `OpenStreetMap`)**: Visualize live 1-Hz truck routes, tunnel satellite loss (HDOP/accuracy drift), and per-second weather data directly inside the chat or in a new tab.
+  - **Live LLM, Context Window & Reasoning Configuration**: Switch between local `Ollama`, `RunPod vLLM`, `OpenAI`, `Google Gemini`, and `Anthropic Claude` at runtime—including live model discovery, configurable context window (`4k`–`64k` tokens), and Thinking/Reasoning toggle (`🧠 Thinking ON` / `⚡ Fast`).
 
 ---
 
@@ -36,6 +38,13 @@ chmod +x setup.sh
 ./setup.sh --mode gpu --preset high     # NVIDIA CUDA GPU (Docker with NVIDIA Runtime)
 ./setup.sh --mode cpu --preset light    # Pure CPU mode in Docker
 
+# Load or reset optional industry Showcases (starts with no Showcase by default):
+./setup.sh --showcase list              # List available Showcases
+./setup.sh --showcase 1                 # Load Showcase 01: HR & IT Consulting (7 PDFs + 3,000 Employees)
+./setup.sh --showcase 2                 # Load Showcase 02: Spedition & 1-Hz GPS Telemetry (6 PDFs + 120 Trucks + 232 Tours)
+./setup.sh --showcase 3                 # Load Showcase 03: E-Commerce Webstore Multi-DB (6 Contract PDFs + Internal DB + External Shop DB)
+./setup.sh --showcase none              # Reset database & unload active Showcase
+
 # Custom port configuration (auto-fallback if ports are already in use):
 ./setup.sh --port 8090
 
@@ -48,16 +57,80 @@ chmod +x setup.sh
 ./setup.sh --stop
 ```
 
-The [setup.sh](file:///Users/john/Documents/workspaces/RAG-Gemini/setup.sh) script automatically:
+The [`./setup.sh`](./setup.sh) script automatically:
 1. Checks Docker, CPU cores, system RAM, Apple Silicon Metal, and NVIDIA GPU (`nvidia-smi`).
 2. Checks whether configured ports (`8080`, `8000`, `8081`, `8082`, `8083`) are free and automatically selects the next available port if occupied by another tool.
-3. Generates/updates `.env` and synchronizes vector dimensions in [sql/init.surql](file:///Users/john/Documents/workspaces/RAG-Gemini/sql/init.surql).
-4. Starts all services via [docker-compose.yml](file:///Users/john/Documents/workspaces/RAG-Gemini/docker-compose.yml) (plus native `text-embeddings-router` Metal GPU servers on Apple Silicon).
-5. Initializes the SurrealDB schema (HNSW vector index, German/English BM25 full-text index, and Knowledge Graph relation tables).
+3. Generates/updates `.env` and synchronizes vector dimensions in [`./sql/init.surql`](./sql/init.surql).
+4. Starts all services via [`./docker-compose.yml`](./docker-compose.yml) (plus native `text-embeddings-router` Metal GPU servers on Apple Silicon).
+5. Initializes only the core RAG & GraphRAG schema (`document`, `chunk`, `entity`, `mentions`, `relates_to`) on startup—showcase schemas are loaded strictly on demand.
 
 ---
 
-## 2. Hardware Requirements
+## 2. Modular Architecture & Source Code Layout
+
+All source files in [`./rust-rag-orchestrator/src/`](./rust-rag-orchestrator/src/) are organized by domain context (~70–400 lines per module), and all Showcase-specific code resides inside its own [`./Showcase/`](./Showcase/README.md) directory:
+
+```text
+├── rust-rag-orchestrator/src/
+│   ├── main.rs                  # Axum server startup, router assembly & AppState
+│   ├── config.rs                # Environment variables & runtime configuration
+│   ├── db/                      # [Package: Database & GraphRAG]
+│   │   ├── mod.rs               # Core SurrealDB HTTP client & core schema initialization
+│   │   ├── documents.rs         # Document & chunk CRUD + Knowledge Graph persistence
+│   │   └── search.rs            # Hybrid Search (HNSW + BM25 + RRF) & 2-Hop Graph traversal
+│   ├── ingestion/               # [Package: Document Ingestion, PDF/OCR & Chunking]
+│   │   ├── mod.rs               # TEI batch embedding & Cross-Encoder reranking client
+│   │   ├── chunker.rs           # Structure-aware document chunker (headings, tables, lists)
+│   │   ├── pdf.rs               # PDF extraction, 3-stage OCR, PDF synthesis & viewer handler
+│   │   ├── documents.rs         # Document upload, deduplication & management HTTP handlers
+│   │   └── attachments.rs       # Ephemeral in-memory chat file extraction (/v1/extract)
+│   ├── retrieval/               # [Package: Multi-Hop Retrieval & Dynamic Text-to-SQL]
+│   │   ├── mod.rs               # Multi-Hop Hybrid Retrieval pipeline (/v1/retrieve)
+│   │   ├── text_to_sql.rs       # Dynamic Text-to-SurrealQL Engine (read-only guardrails)
+│   │   └── sql_formatter.rs     # Generic SQL-to-Markdown table renderer
+│   ├── llm/                     # [Package: LLM Runtime & Streaming]
+│   │   ├── mod.rs               # LLM runtime config, model discovery & entity extraction
+│   │   ├── providers.rs         # Multi-provider completions (OpenAI/Ollama/Anthropic/Gemini)
+│   │   └── stream.rs            # Real-time SSE token streaming across LLM providers
+│   └── api/                     # [Package: Chat API, MCP & Showcase Dispatcher]
+│       ├── mod.rs
+│       ├── chat.rs              # Streaming RAG chat & OpenAI-compatible /v1/chat/completions
+│       ├── mcp.rs               # Core Model Context Protocol (MCP) JSON-RPC 2.0 server
+│       └── showcases.rs         # Feature-gated Showcase dispatcher (ActiveShowcase::None by default)
+│
+├── Showcase/
+│   ├── README.md
+│   ├── Showcase_01_HR_Consulting/
+│   │   ├── SHOWCASE.md
+│   │   ├── documents/     # 7 PDFs (Customer SLAs, Project Specs, HR Profiles)
+│   │   └── src/           # Isolated Showcase 01 Rust modules (mod.rs, db.rs, handlers.rs, seed.rs, mcp.rs)
+│   ├── Showcase_02_Spedition/
+│   │   ├── SHOWCASE.md
+│   │   ├── documents/     # 6 PDFs (Cold-Chain SLAs, ADR Guidelines, Fleet Audit)
+│   │   └── src/           # Isolated Showcase 02 Rust modules (mod.rs, db.rs, handlers.rs, seed.rs, map_view.rs, mcp.rs)
+│   └── Showcase_03_Webstore/
+│       ├── SHOWCASE.md
+│       ├── documents/     # 6 PDFs (Supplier Contracts, Marketing Contracts, Warehouse Leases)
+│       └── src/           # Isolated Showcase 03 Multi-DB Rust modules (mod.rs, db.rs, handlers.rs, seed.rs, mcp.rs)
+│
+└── rust-rag-ui/src/
+    └── main.rs            # Leptos CSR WebAssembly Chat & Knowledge Studio UI
+```
+
+You can also compile the orchestrator without any showcase code via Cargo feature flags:
+```bash
+cd rust-rag-orchestrator
+cargo check --no-default-features                 # Core RAG + GraphRAG only
+cargo check --no-default-features --features showcase-01
+cargo check --no-default-features --features showcase-02
+cargo check --no-default-features --features showcase-03
+```
+
+> 📖 **Connecting Your Own Database**: See **[`./how_to.md`](./how_to.md)** for a step-by-step guide on connecting an existing SurrealDB instance, exposing custom tables to the Dynamic Text-to-SurrealQL engine, or integrating external PostgreSQL / MySQL databases.
+
+---
+
+## 3. Hardware Requirements
 
 | Compute Mode | Tier | CPU | System RAM | GPU / VRAM | Disk (SSD) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -69,9 +142,9 @@ The [setup.sh](file:///Users/john/Documents/workspaces/RAG-Gemini/setup.sh) scri
 
 ---
 
-## 3. Generic LLM Configuration (`.env` or Live in Chat UI)
+## 4. Generic LLM Configuration (`.env` or Live in Chat UI)
 
-You can configure any LLM either in `.env` (template in [.env.example](file:///Users/john/Documents/workspaces/RAG-Gemini/.env.example)) or live at runtime via the **Settings (`⚙️`)** button in the web UI:
+You can configure any LLM either in `.env` or live at runtime via the **Settings (`⚙️`)** button in the web UI:
 
 ### Option A: Local LLM (Ollama / vLLM / llama.cpp / LM Studio)
 ```env
@@ -120,9 +193,9 @@ LLM_PROVIDER=none
 
 ---
 
-## 4. REST API & MCP Endpoints
+## 5. REST API & MCP Endpoints
 
-The Rust orchestrator ([rust-rag-orchestrator/src/main.rs](file:///Users/john/Documents/workspaces/RAG-Gemini/rust-rag-orchestrator/src/main.rs)) runs on port `8080` by default:
+The Rust orchestrator ([`./rust-rag-orchestrator/src/main.rs`](./rust-rag-orchestrator/src/main.rs)) runs on port `8080` by default:
 
 ### 1. Leptos WASM Chat & Knowledge Studio (`GET /`)
 Open `http://localhost:8080/` in your browser.
@@ -144,12 +217,12 @@ curl -X POST http://localhost:8080/v1/ingest/file \
   -F "files=@/path/to/document.pdf"
 ```
 
-### 4. Two-Stage Retrieval: Hybrid Search + GraphRAG + Cross-Encoder Reranking (`POST /v1/retrieve`)
+### 4. Multi-Stage Retrieval: Hybrid Search + GraphRAG + Cross-Encoder Reranking + Dynamic Text-to-SurrealQL (`POST /v1/retrieve`)
 ```bash
 curl -X POST http://localhost:8080/v1/retrieve \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "How does SurrealDB combine vector search and full-text search?",
+    "query": "List all drivers sorted descending by kilometers driven in April.",
     "top_n": 4,
     "reranker": "fast"
   }'
@@ -173,11 +246,11 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 Query or update the active LLM provider, base URL, API key, and model without restarting the container.
 
 ### 7. MCP Server (Model Context Protocol) (`POST /mcp`)
-Exposes the `search_knowledge_base` tool over JSON-RPC 2.0 so external AI agents (Claude Desktop, Cursor, custom agents) can query SurrealDB natively.
+Exposes `search_knowledge_base` (plus showcase-specific Text-to-SurrealQL tools `query_employee_skills` or `query_fleet_logistics` when a showcase is active) over JSON-RPC 2.0 so external AI agents (Claude Desktop, Cursor, custom agents) can query SurrealDB natively.
 
 ---
 
-## 5. License Overview (Commercial Use)
+## 6. License Overview (Commercial Use)
 
 All components in this stack are free and allow **commercial use**:
 
@@ -185,6 +258,6 @@ All components in this stack are free and allow **commercial use**:
 | :--- | :--- | :--- | :--- | :--- |
 | **SurrealDB** (`surrealdb/surrealdb`) | Rust | **BSL 1.1** (converts to Apache 2.0 after 4 yrs) | **Yes** (with 1 exception) | Free for commercial products, client solutions, and internal production use. Only restriction: may not be resold as a managed DBaaS offering to third parties. |
 | **Hugging Face TEI** (`text-embeddings-inference`) | Rust | **Apache 2.0** | **Yes (Unrestricted)** | Official Rust inference server for embeddings & cross-encoder rerankers. |
-| **Rust RAG Orchestrator & Leptos UI** (`axum`, `tokio`, `leptos`, `text-splitter`, `pdf-extract`) | Rust | **MIT / Apache 2.0** | **Yes (Unrestricted)** | Full source code in `rust-rag-orchestrator/` and `rust-rag-ui/`. |
+| **Rust RAG Orchestrator & Leptos UI** (`axum`, `tokio`, `leptos`, `text-splitter`, `pdf-extract`) | Rust | **MIT / Apache 2.0** | **Yes (Unrestricted)** | Full source code in `./rust-rag-orchestrator/` and `./rust-rag-ui/`. |
 | **Embedding Models** (`BAAI/bge-m3` / `bge-base-en-v1.5`) | Safetensors | **MIT License** | **Yes (Unrestricted)** | Multilingual dense embedding models. |
 | **Reranker Models** (`BAAI/bge-reranker-v2-m3` / `mmarco-mMiniLMv2-L12`) | Safetensors | **Apache 2.0 / MIT** | **Yes (Unrestricted)** | Cross-encoder models for precision reranking. |

@@ -6,7 +6,7 @@
     <title>Rust RAG & GraphRAG Studio (SurrealDB + Leptos WASM)</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%234f46e5'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-size='38'%3E%F0%9F%A6%80%3C/text%3E%3C/svg%3E" />
     <!-- Trunk automatically compiles the Rust crate to WebAssembly (.wasm) -->
-    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <link data-trunk rel="rust" data-wasm-opt="0" />
     <style>
         :root {
             --bg-dark: #0b0f19;
@@ -290,7 +290,7 @@
         }
         .sidebar-icon-bar {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
             gap: 0.35rem;
         }
         .sidebar-icon-btn {
@@ -558,8 +558,44 @@
             background: var(--bg-input);
             border: 1px solid var(--border);
             border-radius: 0.45rem;
-            padding: 0.65rem;
+            padding: 0.55rem 0.75rem;
             margin-top: 0.5rem;
+            transition: border-color 0.15s ease;
+        }
+        .source-item:hover {
+            border-color: #475569;
+        }
+        .source-item[open] {
+            border-color: #6366f1;
+        }
+        .source-item > summary {
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            user-select: none;
+        }
+        .source-item > summary::-webkit-details-marker {
+            display: none;
+        }
+        .source-item .source-chevron {
+            display: inline-block;
+            font-size: 0.7rem;
+            color: #818cf8;
+            margin-right: 0.4rem;
+            transition: transform 0.15s ease;
+        }
+        .source-item[open] .source-chevron {
+            transform: rotate(90deg);
+        }
+        .source-body {
+            margin-top: 0.6rem;
+            padding-top: 0.55rem;
+            border-top: 1px solid #1e293b;
+            color: #cbd5e1;
         }
         .badge {
             display: inline-block;
@@ -792,9 +828,10 @@
             width: 100%;
         }
         .docs-search-input {
-            flex: 1;
+            flex: 0 0 auto;
+            width: 100%;
             min-width: 0;
-            padding: 0.55rem 0.85rem;
+            padding: 0.5rem 0.85rem;
             background: var(--bg-input);
             border: 1px solid var(--border);
             border-radius: 0.5rem;
@@ -802,6 +839,10 @@
             font-size: 0.85rem;
             outline: none;
             transition: border-color 0.2s;
+        }
+        .docs-search-filter-row .docs-search-input {
+            flex: 1;
+            width: auto;
         }
         .docs-search-input:focus {
             border-color: var(--accent);

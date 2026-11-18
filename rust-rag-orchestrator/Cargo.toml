@@ -5,6 +5,12 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "100% Rust RAG & GraphRAG Orchestrator for SurrealDB, Hugging Face TEI, and Generic LLMs"
 
+[features]
+default = ["showcase-01", "showcase-02", "showcase-03"]
+showcase-01 = []
+showcase-02 = []
+showcase-03 = []
+
 [dependencies]
 axum = { version = "0.7", features = ["multipart", "macros"] }
 tokio = { version = "1.40", features = ["full"] }

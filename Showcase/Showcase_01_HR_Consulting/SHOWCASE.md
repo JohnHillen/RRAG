@@ -16,8 +16,15 @@ This showcase demonstrates:
 
 ## 📂 2. Test Documents Overview
 
-All 7 sample PDF documents are pre-generated in the repository directory:
-👉 **[`showcase_documents/`](./showcase_documents/)**
+All 7 sample PDF documents are located in this showcase directory:
+👉 **[`Showcase/Showcase_01_HR_Consulting/documents/`](./documents/)**
+
+To load this entire showcase (all 7 PDFs + 3,000 structured employee records) automatically via CLI:
+```bash
+./setup.sh --showcase 1
+# or:
+./setup.sh --showcase hr
+```
 
 ### 👤 Employee Profiles (`HR/`)
 | File | Core Technical Skills | Language Level | Assigned Project |
@@ -166,22 +173,20 @@ Because the embedding model (`BAAI/bge-m3`) and cross-encoder rerankers are mult
 
 ---
 
-## 🏢 6. Enterprise Scale Showcase: 300 & 3,000 Employees (Relational SQL/CRM + Hybrid RAG)
+## 🏢 6. Enterprise Scale Showcase: 3,000 Employees (Relational SQL/CRM + Hybrid RAG)
 
-In production environments, companies do not store 300 or 3,000 employee records solely as unstructured PDFs—doing so would immediately hit the **Top-K Vector Retrieval bottleneck** (`k=4` or `k=6`), causing 98% of matching candidates to be lost.
+In production environments, companies do not store 3,000 employee records solely as unstructured PDFs—doing so would immediately hit the **Top-K Vector Retrieval bottleneck** (`k=4` or `k=6`), causing 98% of matching candidates to be lost.
 
 Instead, our **Hybrid Enterprise RAG** combines:
 - **Hop 1 (Unstructured PDFs via HNSW + BM25):** Reads the client frame agreement (`[Sales] Kundenvereinbarung_BMW_AG.pdf`) and extracts mandatory requirements (`Rust`, `SQL`, `English >= B2`).
-- **Hop 2 (Deterministic SQL/SurrealQL against `employee_record`):** Evaluates all **300** (or **3,000**) structured employee rows in `< 10 ms` with **100% Recall**, exact CEFR language comparison (`A1..C2`), strict token matching (`NoSQL != SQL`), aggregate statistics, and automatic **1-Skill Gap Analysis** (employees needing only 1 training course).
+- **Hop 2 (Deterministic SQL/SurrealQL against `employee_record`):** Evaluates all **3,000** structured employee rows in `< 150 ms` with **100% Recall**, exact CEFR language comparison (`A1..C2`), strict token matching (`NoSQL != SQL`), aggregate statistics, and automatic **1-Skill Gap Analysis** (employees needing only 1 training course).
 
-### 🛠️ How to Switch Between 300 and 3,000 Employees in the UI
-1. Click **`🏢 CRM/DB`** at the bottom left of the sidebar (or open the **`🏢 CRM / HR DB`** tab in the knowledge modal).
-2. Choose one of the two benchmark presets:
-   - **`⚡ 300 Mitarbeiter (30 Treffer)`**: Seeds **300 employees** containing **30 full matches (10%)**, **15 training gap candidates (5%)**, and **255 non-matching profiles (85%)**.
-   - **`🔥 3.000 Mitarbeiter (300 Treffer)`**: High-scale stress test seeding **3,000 employees** containing **300 full matches (10%)**, **150 training gap candidates (5%)**, and **2,550 non-matching profiles (85%)**.
-3. In **Settings (`⚙️`)**, intentionally set **Top-N Chunks** to **`4 Chunks`** to prove that even with a tiny Top-4 chunk limit, the system retrieves **all 30 (or 300) matching employees** without losing a single candidate!
+### 🛠️ How to Load or Inspect the 3,000 Employees in the UI
+1. Run `./setup.sh --showcase 1` in the terminal, OR click **`🗄️ SQL/DB`** at the bottom left of the sidebar (or the active Showcase badge in the top header) to open the **`🏢 HR / CRM DB`** fullscreen view.
+2. Click **`🏢 3.000 Mitarbeiter laden (300 Treffer)`** to seed **3,000 employees** containing **300 full matches (10%)**, **150 training gap candidates (5%)**, and **2,550 non-matching profiles (85%)**.
+3. In **Settings (`⚙️`)**, intentionally set **Top-N Chunks** to **`4 Chunks`** to prove that even with a tiny Top-4 chunk limit, the system retrieves **all 300 matching employees** without losing a single candidate!
 
-### 🧪 Scenario 6: 300 / 3,000 Employee Scaling & Availability Test
+### 🧪 Scenario 6: 3,000 Employee Scaling & Availability Test
 > **Prompt (DE):**  
 > *„Wie viele Mitarbeiter in unserer Datenbank erfüllen alle Pflichtanforderungen der BMW AG zu 100%, wie verteilen sie sich auf die Standorte, und welche Kandidaten sind aktuell zu 100% verfügbar?“*  
 > **Prompt (EN):**  
@@ -189,9 +194,11 @@ Instead, our **Hybrid Enterprise RAG** combines:
 
 - **What happens:**
   - **Source #1 (`[Sales] Kundenvereinbarung_BMW_AG.pdf`)** provides the contract rules (`Rust`, `SQL`, `>= B2`).
-  - **Source #2 (`🗄️ [CRM/HR-DB SQL Query]`)** scans all **300** (or **3,000**) rows in `employee_record` and injects an exact SQL summary + Markdown table of the **30** (or **300**) full matches, including availability percentages, hourly rates, and city distribution.
+  - **Source #2 (`🗄️ [CRM/HR-DB SQL Query]`)** scans all **3,000** rows in `employee_record` and injects an exact SQL summary + Markdown table of the **300** full matches (incl. **60** with 100% availability), hourly rates, and city distribution.
 
 ### 🧪 Scenario 7: Automated Upskilling & 1-Skill Gap Analysis across the Workforce
+> **Follow-up Prompt (EN):**  
+> *"Which additional employees could be considered for BMW AG if we fund exactly one training course (language or technical), and which specific course does each candidate need?"*  
 > **Follow-up Prompt (DE):**  
 > *„Welche Mitarbeiter kommen für die BMW AG zusätzlich infrage, wenn wir genau eine Weiterbildung (Sprachkurs oder Technik-Schulung) finanzieren, und welche Schulung braucht jeder konkret?“*
 

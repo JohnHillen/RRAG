@@ -1,0 +1,77 @@
+%PDF-1.4
+1 0 obj
+<< /Length 1307 >>
+stream
+BT
+/F1 16 Tf
+45 775 Td
+(Gefahrgut-Transportvereinbarung \(ADR\): ChemCorp Rhein-Main AG) Tj
+/F2 10 Tf
+0 -24 Td
+0 -8 Td
+/F1 12 Tf
+(1. Vertragspartner & Geltungsbereich) Tj
+/F2 10 Tf
+0 -15 Td
+(Auftraggeber: ChemCorp Rhein-Main AG & BatteryTech Europe) Tj
+0 -13 Td
+(Vertragsnummer: ADR-CHEM-2026-09) Tj
+0 -13 Td
+(Frachtgut: Lithium-Ionen-Batteriezellen \(ADR Klasse 9\) & Industriechemikalien \(ADR Klasse 3\)) Tj
+0 -13 Td
+0 -8 Td
+/F1 12 Tf
+(2. Strenge ADR-Sicherheitsauflagen fuer Fahrzeuge & Fahrer) Tj
+/F2 10 Tf
+0 -15 Td
+(  * Fahrzeug-Zertifizierung: Aktive ADR-Gefahrgutzulassung \(Tafel & Feuerloeschsystem\)) Tj
+0 -13 Td
+(  * Inspektions-Status: Keine ausstehende Hauptinspektion oder SP-Pruefung innerhalb der naechsten 3.000 km) Tj
+0 -13 Td
+(  * Motor-Oelstand: Mindestens 70% vor Tourstart) Tj
+0 -13 Td
+(  * Bremsverschleiss: Maximal 50% \(erhoehte Sicherheitsanforderung fuer Gefahrgut!\)) Tj
+0 -13 Td
+(  * Reifendruck: Muss zwischen 8.2 bar und 8.8 bar auf allen Achsen liegen) Tj
+0 -13 Td
+0 -8 Td
+/F1 12 Tf
+(3. Zugelassene Gefahrgut-Lagerhallen) Tj
+/F2 10 Tf
+0 -15 Td
+(  * Rhein-Ruhr Gefahrgut-Depot Duisburg \(WH-DUI-04\) und Zentrallager Hamburg-Hafen \(WH-HAM-01\)) Tj
+0 -13 Td
+(  * Hinweis: Das City-Hub Berlin-Westhafen \(WH-BER-05\) hat KEINE ADR-Klasse-3 Tanklager-Freigabe!) Tj
+0 -13 Td
+ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R /F2 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000001367 00000 n 
+0000001469 00000 n 
+0000001566 00000 n 
+0000001702 00000 n 
+0000001759 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+1808
+%%EOF
