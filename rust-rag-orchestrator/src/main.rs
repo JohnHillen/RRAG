@@ -35,7 +35,7 @@ use tracing::info;
 pub struct AppState {
     pub config: AppConfig,
     pub db: SurrealClient,
-    pub external_db: Option<SurrealClient>,
+    pub external_db: Option<db::external::ExternalDbClient>,
     pub inference: InferenceClient,
     pub llm: LlmClient,
     pub active_showcase: Arc<RwLock<ActiveShowcase>>,
@@ -63,10 +63,10 @@ impl AppState {
         }
     }
 
-    /// Returns the attached external database client (or an isolated `webstore_external / shop_erp` SurrealClient)
+    /// Returns the attached external SurrealDB client (or an isolated `webstore_external / shop_erp` SurrealClient)
     /// for Showcase 03 (Webstore Multi-DB).
     pub fn webstore_external_db(&self) -> SurrealClient {
-        if let Some(ref ext) = self.external_db {
+        if let Some(db::external::ExternalDbClient::Surreal(ref ext)) = self.external_db {
             return ext.clone();
         }
         let mut ext_cfg = self.config.clone();
@@ -96,19 +96,7 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(900))
         .build()?;
 
-    let external_db = config.external_surreal_url.as_ref().map(|ext_url| {
-        let mut ext_cfg = config.clone();
-        ext_cfg.surreal_url = ext_url.clone();
-        ext_cfg.surreal_user = config.external_surreal_user.clone();
-        ext_cfg.surreal_pass = config.external_surreal_pass.clone();
-        ext_cfg.surreal_ns = config.external_surreal_ns.clone();
-        ext_cfg.surreal_db = config.external_surreal_db.clone();
-        info!(
-            "Attached external database client -> URL: {}, NS: {}, DB: {}",
-            ext_url, ext_cfg.surreal_ns, ext_cfg.surreal_db
-        );
-        SurrealClient::new(http.clone(), ext_cfg)
-    });
+    let external_db = db::external::ExternalDbClient::from_config(http.clone(), &config).await;
 
     let state = AppState {
         db: SurrealClient::new(http.clone(), config.clone()),

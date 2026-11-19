@@ -1,5 +1,5 @@
 use crate::{
-    db::{RetrievedChunk, SurrealClient},
+    db::{external::ExternalDbClient, RetrievedChunk, SurrealClient},
     llm::ChatMessage,
     sql_formatter::format_sql_results_as_chunk,
     AppState,
@@ -209,6 +209,153 @@ DATABASE SCHEMA:
         doc_id,
         title_prefix,
     ))
+}
+
+/// Executes Dynamic Text-to-SQL against any attached `ExternalDbClient` (PostgreSQL, MySQL, SQLite, AWS RDS, Azure SQL, or SurrealDB).
+/// Automatically switches between Standard ANSI SQL (for Postgres/MySQL/SQLite) and SurrealQL (for SurrealDB).
+pub async fn execute_dynamic_text_to_sql_on_external(
+    state: &AppState,
+    ext_client: &ExternalDbClient,
+    user_query: &str,
+    hop1_anchor: Option<&RetrievedChunk>,
+    schema_prompt: &str,
+    chunk_id: &str,
+    doc_id: &str,
+    title_prefix: &str,
+) -> Option<RetrievedChunk> {
+    if let ExternalDbClient::Surreal(ref sur) = ext_client {
+        return execute_dynamic_text_to_sql_on_client(
+            state,
+            sur,
+            user_query,
+            hop1_anchor,
+            schema_prompt,
+            chunk_id,
+            doc_id,
+            title_prefix,
+        )
+        .await;
+    }
+
+    let anchor_context = match hop1_anchor {
+        Some(a) => {
+            let excerpt: String = a.content.chars().take(1200).collect();
+            format!(
+                "\n\nADDITIONAL CONTEXT FROM RETRIEVED DOCUMENT ('{}'):\n{}",
+                a.doc_title, excerpt
+            )
+        }
+        None => String::new(),
+    };
+
+    let dialect = ext_client.dialect_label();
+    let system_prompt = format!(
+        r#"You are an expert {dialect} query generator.
+Translate the user's question (and any requirements from the retrieved document context) into 1 to 3 read-only SQL `SELECT` statements using ONLY the tables and exact column names listed in DATABASE SCHEMA below.
+If the user's question is completely unrelated to all tables in DATABASE SCHEMA below, output ONLY the word `NONE`.
+
+CRITICAL SQL SYNTAX RULES:
+1. Output ONLY raw `SELECT` statements separated by semicolons `;` (or `NONE`). Do NOT output markdown explanations or prose.
+2. Use standard SQL functions (`COUNT(*)`, `SUM(field)`, `AVG(field)`, `MIN(field)`, `MAX(field)`), `WHERE`, `GROUP BY`, and `ORDER BY`.
+3. Always add a sensible `LIMIT` (e.g. `LIMIT 30`) on ungrouped queries.
+
+DATABASE SCHEMA:
+{schema_prompt}"#
+    );
+
+    let messages = vec![
+        ChatMessage {
+            role: "system".into(),
+            content: system_prompt,
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: format!("USER QUESTION: {}{}", user_query, anchor_context),
+        },
+    ];
+
+    let raw_llm_out = state
+        .llm
+        .chat_completion(&messages, None, Some(0.0), Some(4096), Some(false))
+        .await
+        .ok()?;
+
+    if raw_llm_out.trim().eq_ignore_ascii_case("NONE") {
+        return None;
+    }
+
+    let statements = extract_readonly_standard_sql(&raw_llm_out);
+    if statements.is_empty() {
+        return None;
+    }
+
+    info!(
+        "Executing dynamic Standard Text-to-SQL ({} - {}): {}",
+        title_prefix,
+        dialect,
+        statements.join(" ")
+    );
+
+    let raw_responses = ext_client.execute_select_statements(&statements).await.ok()?;
+
+    Some(format_sql_results_as_chunk(
+        &statements,
+        &raw_responses,
+        chunk_id,
+        doc_id,
+        title_prefix,
+    ))
+}
+
+/// Extracts read-only standard SQL `SELECT` statements (for PostgreSQL, MySQL, SQLite) without rewriting to SurrealQL.
+pub fn extract_readonly_standard_sql(raw: &str) -> Vec<String> {
+    let without_think = if let Some(end_idx) = raw.find("</think>") {
+        &raw[end_idx + "</think>".len()..]
+    } else {
+        raw
+    };
+
+    let cleaned = if let Some(fence_start) = without_think.find("```") {
+        let after_fence = &without_think[fence_start + 3..];
+        let body_start = after_fence.find('\n').map(|i| i + 1).unwrap_or(0);
+        let body = &after_fence[body_start..];
+        if let Some(fence_end) = body.find("```") {
+            &body[..fence_end]
+        } else {
+            body
+        }
+    } else {
+        without_think
+    };
+
+    let mut valid = Vec::new();
+    for raw_stmt in cleaned.split(';') {
+        let code_lines: Vec<&str> = raw_stmt
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with("--") && !l.starts_with("//"))
+            .collect();
+        if code_lines.is_empty() {
+            continue;
+        }
+        let joined = code_lines.join(" ");
+        let upper = joined.to_uppercase();
+        if !upper.starts_with("SELECT ") {
+            continue;
+        }
+        let forbidden = [
+            "DELETE ", "UPDATE ", "UPSERT ", "CREATE ", "INSERT ", "REMOVE ", "DEFINE ",
+            "RELATE ", "KILL ", "ALTER ", "DROP ", "TRUNCATE ", "GRANT ", "REVOKE ",
+        ];
+        if forbidden.iter().any(|kw| upper.contains(kw)) {
+            continue;
+        }
+        valid.push(format!("{};", joined.trim_end_matches(';')));
+        if valid.len() >= 3 {
+            break;
+        }
+    }
+    valid
 }
 
 /// Extracts `SELECT` statements from LLM output, strips `<think>` tags and markdown code fences,

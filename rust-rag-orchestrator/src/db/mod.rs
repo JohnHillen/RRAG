@@ -1,4 +1,5 @@
 pub mod documents;
+pub mod external;
 pub mod search;
 
 use self::search::{deserialize_graph_entities, deserialize_graph_relations};

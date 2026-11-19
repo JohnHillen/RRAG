@@ -1,81 +1,104 @@
-# 🔌 How-To Guide: Connecting an Existing Database to the Rust RAG & Text-to-SQL Pipeline
+# 🔌 How-To Guide: Connecting an Existing SQL or Cloud Database (PostgreSQL, MySQL, AWS RDS, Azure, SQLite, SurrealDB)
 
-Because the orchestrator uses a **Dynamic Text-to-SQL / Text-to-SurrealQL Engine** ([`./rust-rag-orchestrator/src/retrieval/text_to_sql.rs`](./rust-rag-orchestrator/src/retrieval/text_to_sql.rs) and [`./rust-rag-orchestrator/src/retrieval/sql_formatter.rs`](./rust-rag-orchestrator/src/retrieval/sql_formatter.rs)), you do **not** need to write custom Rust filter functions or static table formatters for every possible user question.
+Because the orchestrator includes a **Universal Multi-Engine External Database Connector** ([`./rust-rag-orchestrator/src/db/external.rs`](./rust-rag-orchestrator/src/db/external.rs)) and a **Dynamic Text-to-SQL Engine** ([`./rust-rag-orchestrator/src/retrieval/text_to_sql.rs`](./rust-rag-orchestrator/src/retrieval/text_to_sql.rs)), your external company database **does not need to be SurrealDB**.
+
+Only the **internal RAG & GraphRAG knowledge base** (storing PDF chunks, 1024d HNSW vectors, BM25 full-text indexes, and Knowledge Graph relations) runs on the bundled SurrealDB container. Your **attached external database** can be any standard relational SQL database or managed cloud database on **AWS**, **Microsoft Azure**, or **Google Cloud**.
 
 ---
 
-## 🏛️ Architecture: How Two Databases Work Together (Internal + Attached Database)
+## 🏛️ 1. Architecture: How the Internal RAG DB and Your External SQL DB Work Together
 
-When you attach an existing company database alongside the RAG pipeline, the system operates across **both databases** automatically:
+When you attach an existing company database via `EXTERNAL_DB_URL`, the pipeline queries **both databases** automatically:
 
 ```text
 User Question
    │
-   ├─► 1. INTERNAL SURREALDB (Hop 1 — Always Active)
-   │      • Searches uploaded PDFs, contracts, SLAs & manuals via HNSW Vector + BM25 + 2-Hop GraphRAG
+   ├─► 1. INTERNAL SURREALDB (Hop 1 — Unstructured Knowledge Base, Always Active)
+   │      • Searches uploaded PDFs, contracts, SLAs, tax laws & manuals (HNSW Vector + BM25 + 2-Hop GraphRAG)
    │      • Produces Document Anchor (Source #1)
    │
-   ├─► 2A. INTERNAL SURREALDB TABLES (Hop 2 — Active Showcase / Internal SQL)
-   │      • Passes Question + Hop-1 Anchor + Internal Schema Prompt to LLM
-   │      • Executes read-only SELECT on internal SurrealDB -> Markdown Table (Source #2)
-   │      • (Outputs `NONE` if the question is unrelated to internal tables)
+   ├─► 2A. INTERNAL SURREALDB TABLES (Hop 2A — Optional Internal / Showcase Tables)
+   │      • Generates read-only SurrealQL `SELECT` against internal tables -> Markdown Table (Source #2)
    │
-   └─► 2B. ATTACHED EXTERNAL DATABASE (Hop 2 — External Live DB via `EXTERNAL_SURREAL_URL`)
-          • Passes Question + Hop-1 Anchor + External Schema Prompt (`EXTERNAL_DB_SCHEMA_FILE`) to LLM
-          • Executes read-only SELECT on the attached database -> Markdown Table (Source #3)
-          • (Outputs `NONE` if the question is unrelated to external tables)
+   └─► 2B. ATTACHED EXTERNAL SQL / CLOUD DATABASE (Hop 2B — via `EXTERNAL_DB_URL`)
+          • Automatically detects the SQL dialect from `EXTERNAL_DB_URL`:
+            - `postgres://` or `postgresql://` -> Standard PostgreSQL (AWS RDS, Aurora, Azure Postgres, GCP, Supabase)
+            - `mysql://` or `mariadb://`       -> Standard MySQL / MariaDB (AWS RDS, Azure MySQL)
+            - `sqlite://`                      -> Standard SQLite
+            - `http://` or `https://`          -> External SurrealDB instance
+          • Passes Question + Hop-1 PDF Anchor + External Schema (`EXTERNAL_DB_SCHEMA_FILE`) to the LLM
+          • Executes read-only `SELECT` on your external database -> Markdown Table (Source #3)
+          • (Outputs `NONE` in ~0.5s if the user's question is unrelated to the external database)
 ```
-
-- **Are both databases considered on a Text-to-SQL query?**
-  **Yes.** When an external database schema is configured (`EXTERNAL_DB_SCHEMA_FILE` or `EXTERNAL_DB_SCHEMA_PROMPT`), [`./rust-rag-orchestrator/src/api/showcases.rs`](./rust-rag-orchestrator/src/api/showcases.rs) evaluates **both** the internal database schema and the external database schema:
-  - If a question only concerns internal tables, the external check returns `NONE` in ~0.5s.
-  - If a question only concerns the attached external database, only the external database returns a table.
-  - If a question spans **both** databases (plus an unstructured PDF contract from Hop 1), all three results (`Source #1` PDF + `Source #2` Internal DB + `Source #3` External DB) are merged into the LLM context window so the assistant can cross-reference them in a single answer.
 
 ---
 
-## Scenario A: Attaching a Second SurrealDB Instance via `.env` (Zero Code Changes)
+## 🚀 2. Zero-Code Setup via `.env` (`EXTERNAL_DB_URL`)
 
-If you have an existing **SurrealDB** instance (e.g., an ERP/CRM/Telemetry database on another port, server, or cloud instance) and want to keep the bundled `rag-surrealdb` container for your PDF embeddings and Knowledge Graph:
+To connect an existing database without writing any Rust code, you only need two things:
+1. A plain-text **Schema Description File** (e.g., `./sql/external_schema.txt`) listing the tables and columns the LLM is allowed to query.
+2. The connection string in **`EXTERNAL_DB_URL`** inside `.env`.
 
-### 1. Create a Schema Description File (`./sql/external_schema.txt`)
-Describe the tables and columns of your existing database in plain English/German:
+### Step 1: Create Your Schema Description File (`./sql/external_schema.txt`)
+Describe your existing SQL tables and columns in plain text:
 
 ```text
-1) TABLE `customer_order` (Customer Orders & Invoices):
-   - `order_id` (string): Unique order number, e.g. 'ORD-2026-1001'
-   - `customer_name` (string): Company name, e.g. 'Siemens AG', 'BMW AG', 'BioPharma Berlin GmbH'
-   - `order_date` (string): ISO date 'YYYY-MM-DD'
-   - `status` (string): Exact values: 'OPEN', 'SHIPPED', 'DELAYED', 'CANCELLED'
-   - `total_eur` (float): Order value in EUR
+1) TABLE `customer_orders` (ERP Customer Orders & Invoices):
+   - `order_id` (varchar): Unique order number, e.g. 'ORD-2026-1001'
+   - `customer_name` (varchar): Company name, e.g. 'Siemens AG', 'BMW AG'
+   - `order_date` (date): ISO date 'YYYY-MM-DD'
+   - `status` (varchar): Exact values: 'OPEN', 'SHIPPED', 'DELAYED', 'CANCELLED'
+   - `total_eur` (numeric): Order value in EUR
    - `items_count` (int): Number of line items
 
-2) TABLE `inventory_item` (Warehouse Stock Levels):
-   - `sku` (string): Product SKU
-   - `product_name` (string): Product description
+2) TABLE `inventory_items` (Warehouse Stock Levels):
+   - `sku` (varchar): Product SKU
+   - `product_name` (varchar): Product description
    - `stock_qty` (int): Available quantity in warehouse
    - `reorder_threshold` (int): Minimum stock before reorder is required
 
 EXAMPLES:
 - Top customers sorted descending by order volume:
-  `SELECT customer_name, math::sum(total_eur) AS revenue_eur, count() AS orders FROM customer_order GROUP BY customer_name ORDER BY revenue_eur DESC LIMIT 20;`
+  `SELECT customer_name, SUM(total_eur) AS revenue_eur, COUNT(*) AS orders FROM customer_orders GROUP BY customer_name ORDER BY revenue_eur DESC LIMIT 20;`
 - Delayed orders above 10,000 EUR:
-  `SELECT order_id, customer_name, order_date, total_eur, status FROM customer_order WHERE status = 'DELAYED' AND total_eur > 10000 ORDER BY total_eur DESC;`
+  `SELECT order_id, customer_name, order_date, total_eur, status FROM customer_orders WHERE status = 'DELAYED' AND total_eur > 10000 ORDER BY total_eur DESC LIMIT 30;`
 ```
 
-### 2. Configure `EXTERNAL_SURREAL_*` in `.env`
-Add the connection details for your attached database to `.env`:
+### Step 2: Set `EXTERNAL_DB_URL` in `.env` (Choose Your Database / Cloud Provider)
 
+#### Option A: On-Premise / Self-Hosted PostgreSQL
 ```env
-# Primary RAG & GraphRAG Database (Bundled Docker SurrealDB)
-SURREAL_URL=http://surrealdb:8000
-SURREAL_USER=root
-SURREAL_PASS=root_secret_password_change_me
-SURREAL_NS=rag_namespace
-SURREAL_DB=knowledge_base
+EXTERNAL_DB_URL=postgres://readonly_user:password@host.docker.internal:5432/erp_production
+EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt
+```
 
-# Attached External Database (Queried automatically via Dynamic Text-to-SurrealQL)
-EXTERNAL_SURREAL_URL=http://host.docker.internal:8001
+#### Option B: AWS (Amazon RDS for PostgreSQL / Amazon Aurora / Amazon Redshift)
+```env
+EXTERNAL_DB_URL=postgres://readonly_user:password@mydb.c9akciq32.eu-central-1.rds.amazonaws.com:5432/erp_production?sslmode=require
+EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt
+```
+
+#### Option C: Microsoft Azure (Azure Database for PostgreSQL Flexible Server)
+```env
+EXTERNAL_DB_URL=postgres://readonly_user:password@my-company-db.postgres.database.azure.com:5432/erp_production?sslmode=require
+EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt
+```
+
+#### Option D: MySQL / MariaDB (On-Premise, AWS RDS MySQL, or Azure Database for MySQL)
+```env
+EXTERNAL_DB_URL=mysql://readonly_user:password@my-mysql-db.mysql.database.azure.com:3306/shop_production
+EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt
+```
+
+#### Option E: Local / Embedded SQLite Database
+```env
+EXTERNAL_DB_URL=sqlite:///data/company_erp.db
+EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt
+```
+
+#### Option F: External SurrealDB Instance
+```env
+EXTERNAL_DB_URL=http://host.docker.internal:8001
 EXTERNAL_SURREAL_USER=readonly_user
 EXTERNAL_SURREAL_PASS=readonly_secret
 EXTERNAL_SURREAL_NS=erp_namespace
@@ -83,148 +106,51 @@ EXTERNAL_SURREAL_DB=production_erp
 EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt
 ```
 
-*(Note: If your external tables live inside the **same** SurrealDB instance as the RAG database, simply omit `EXTERNAL_SURREAL_URL` and only set `EXTERNAL_DB_SCHEMA_FILE=./sql/external_schema.txt`.)*
-
 ---
 
-## Scenario B: Adding a Custom Domain Module in Rust
+## 🔒 3. Enterprise Security Best Practices (Defense-in-Depth)
 
-If you want to bundle a custom database schema together with custom REST endpoints, seed generators, or MCP tools (just like `Showcase_01_HR_Consulting` or `Showcase_02_Spedition`):
+When connecting a production company database (on-premise, AWS RDS, or Azure):
 
-### Step 1: Define Your Schema Prompt
-Create `./Showcase/Custom_ERP/src/mod.rs` and call `execute_dynamic_text_to_sql_on_client`:
-
-```rust
-use crate::{
-    db::RetrievedChunk,
-    text_to_sql::execute_dynamic_text_to_sql_on_client,
-    AppState,
-};
-
-pub const CUSTOM_SCHEMA_PROMPT: &str = r#"
-TABLE `customer_order` (Customer Orders):
-- `order_id` (string)
-- `customer_name` (string)
-- `status` (string): 'OPEN', 'SHIPPED', 'DELAYED'
-- `total_eur` (float)
-"#;
-
-pub async fn augment_retrieval(
-    state: &AppState,
-    query: &str,
-    mut ranked_pool: Vec<RetrievedChunk>,
-    top_n: usize,
-    db_ms: &mut u64,
-    reranker_used: &mut String,
-) -> Vec<RetrievedChunk> {
-    let primary_anchor = ranked_pool.first().cloned();
-    ranked_pool.truncate(top_n);
-    let mut final_chunks = ranked_pool;
-
-    let target_client = state.external_db.as_ref().unwrap_or(&state.db);
-    let t_sql = std::time::Instant::now();
-    if let Some(sql_chunk) = execute_dynamic_text_to_sql_on_client(
-        state,
-        target_client,
-        query,
-        primary_anchor.as_ref(),
-        CUSTOM_SCHEMA_PROMPT,
-        "erp_sql_live_query_result",
-        "erp_database_tables",
-        "🗄️ [ERP-DB Text-to-SQL]",
-    )
-    .await
-    {
-        *db_ms += t_sql.elapsed().as_millis() as u64;
-        let insert_idx = if final_chunks.is_empty() { 0 } else { 1 };
-        final_chunks.insert(insert_idx, sql_chunk);
-        *reranker_used = format!("{} + 🧠 Text-to-SurrealQL (ERP-DB)", reranker_used);
-    }
-
-    final_chunks
-}
-```
-
-### What `execute_dynamic_text_to_sql_on_client` Handles Automatically:
-- **Multi-Hop Context Bridging**: If a user asks *"Which orders violate the delivery SLA agreed with Siemens?"*, Hop 1 retrieves the Siemens PDF contract from the primary RAG database, and `execute_dynamic_text_to_sql_on_client` receives that contract excerpt so it can translate the SLA threshold directly into a `WHERE` clause against the external database.
-- **Read-Only Security Guardrail**: Rejects any statement containing `DELETE`, `UPDATE`, `INSERT`, `CREATE`, `UPSERT`, `REMOVE`, `DEFINE`, `RELATE`, `ALTER`, or `DROP`.
-- **SQL-to-SurrealQL Normalization**: Automatically converts standard SQL aggregates (`SUM(x)` -> `math::sum(x)`, `AVG(x)` -> `math::mean(x)`, `MIN(x)` -> `math::min(x)`, `MAX(x)` -> `math::max(x)`, `COUNT(*)` -> `count()`).
-- **Automatic Self-Correction**: If the database reports a syntax error on the first attempt, the error message is fed back to the LLM to repair the query automatically.
-- **Generic Markdown Table Rendering**: Formats any returned rows into clean Markdown tables via [`./rust-rag-orchestrator/src/retrieval/sql_formatter.rs`](./rust-rag-orchestrator/src/retrieval/sql_formatter.rs).
-
----
-
-## Scenario C: Connecting an External PostgreSQL, MySQL, or SQLite Database
-
-If your existing structured data lives in **PostgreSQL**, **MySQL / MariaDB**, **SQLite**, or **MS SQL Server**, you can choose between two patterns:
-
-### Pattern C1: Sync / Import Tables into SurrealDB
-If you want a single unified query syntax (SurrealQL) and easy 1-file snapshots (`./setup.sh --export`), periodically sync rows from PostgreSQL/MySQL/CSV into SurrealDB via SurrealDB's HTTP `/sql` endpoint:
-
-```bash
-curl -X POST http://localhost:8000/sql \
-  -u "root:root_secret_password_change_me" \
-  -H "Accept: application/json" \
-  -H "surreal-ns: rag_namespace" \
-  -H "surreal-db: knowledge_base" \
-  -d "
-    BEGIN TRANSACTION;
-    UPSERT customer_order:ord_1001 SET
-      order_id = 'ORD-2026-1001',
-      customer_name = 'Siemens AG',
-      order_date = '2026-04-12',
-      status = 'DELAYED',
-      total_eur = 48500.0,
-      items_count = 14;
-    COMMIT TRANSACTION;
-  "
-```
-
-### Pattern C2: Querying PostgreSQL / MySQL Live via `sqlx`
-If your data must remain exclusively in **PostgreSQL** or **MySQL** and be queried live on every chat question:
-
-1. **Add `sqlx` to [`./rust-rag-orchestrator/Cargo.toml`](./rust-rag-orchestrator/Cargo.toml)**:
-   ```toml
-   sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json"] }
+1. **Orchestrator Read-Only Guardrail ([`./rust-rag-orchestrator/src/retrieval/text_to_sql.rs`](./rust-rag-orchestrator/src/retrieval/text_to_sql.rs))**:
+   - The Rust orchestrator strictly validates every LLM-generated statement before execution.
+   - Only statements starting with `SELECT ` are allowed; any statement containing `DELETE`, `UPDATE`, `INSERT`, `CREATE`, `UPSERT`, `ALTER`, `DROP`, `TRUNCATE`, `GRANT`, or `REVOKE` is rejected immediately.
+2. **Database-Level Read-Only User (Recommended)**:
+   Always create a dedicated read-only database user in PostgreSQL / MySQL / AWS RDS / Azure for `EXTERNAL_DB_URL`:
+   ```sql
+   -- PostgreSQL / AWS RDS / Azure Database for PostgreSQL:
+   CREATE USER rag_readonly WITH PASSWORD 'strong_password';
+   GRANT CONNECT ON DATABASE erp_production TO rag_readonly;
+   GRANT USAGE ON SCHEMA public TO rag_readonly;
+   GRANT SELECT ON ALL TABLES IN SCHEMA public TO rag_readonly;
    ```
-2. **Add `EXTERNAL_POSTGRES_URL` to `.env` using a Read-Only Database Role**:
-   ```env
-   EXTERNAL_POSTGRES_URL=postgres://readonly_user:password@host.docker.internal:5432/production_db
-   ```
-3. **Execute the Generated `SELECT` Query and Pass JSON Rows to `format_sql_results_as_chunk`**:
-   Wrap the validated `SELECT` query in `SELECT COALESCE(json_agg(t), '[]'::json) AS result FROM (<select_query>) t;` using `sqlx::query_scalar` and pass the resulting JSON array directly into `format_sql_results_as_chunk` in [`./rust-rag-orchestrator/src/sql_formatter.rs`](./rust-rag-orchestrator/src/sql_formatter.rs). Both the primary SurrealDB (Hop 1 PDFs + Hop 2 SurrealDB tables) and PostgreSQL (Hop 2 external tables) will then be queried and formatted identically.
 
 ---
 
-## 4. Tips for Writing High-Accuracy Schema Prompts
+## 🎯 4. Built-in Multi-DB Reference Implementation: Showcase 03 (`Showcase_03_Webstore`)
 
-To get 100% deterministic SQL queries from local 7B–14B models (`qwen2.5:7b`, `deepseek-r1:14b`, `llama3.1:8b`) as well as cloud models:
+To see an end-to-end working example of the **Internal Database + External Database** architecture in action, inspect **[`./Showcase/Showcase_03_Webstore/`](./Showcase/Showcase_03_Webstore/SHOWCASE.md)**:
+
+- **Internal Database (`rag_namespace / knowledge_base`)**:
+  Holds 6 unstructured PDF contracts (supplier SLAs, marketing agency agreements, warehouse leases) + the internal contract table `internal_contract_ledger`.
+- **External Database (`webstore_external / shop_erp` or any `EXTERNAL_DB_URL`)**:
+  Holds the webstore product catalog (`shop_product`) and sales history (`shop_sale`).
+- Run it anytime with:
+  ```bash
+  ./setup.sh --showcase 3
+  ```
+
+---
+
+## 💡 5. Tips for Writing High-Accuracy Schema Prompts
+
+To get 100% deterministic SQL queries from both local 7B–14B models (`qwen2.5:7b`, `deepseek-r1:14b`, `llama3.1:8b`) and cloud models (`GPT-4o`, `Gemini 2.5`, `Claude 3.7`):
 
 1. **List Exact Enum / Status Values**:
-   Instead of writing `- status (string): Order status`, write:
-   `- status (string): Exact values are 'OPEN', 'SHIPPED', 'DELAYED', 'CANCELLED'`.
+   Instead of writing `- status (varchar): Order status`, write:
+   `- status (varchar): Exact values are 'OPEN', 'SHIPPED', 'DELAYED', 'CANCELLED'`.
 2. **Clarify Ambiguous Columns**:
-   If a table has both a lifetime counter and a monthly counter (like `fleet_vehicle.mileage_km` vs. `fleet_tour.distance_km`), add a short note:
+   If a table has both a lifetime counter and a monthly counter, add a short note:
    `- mileage_km (int): Total lifetime odometer reading (NOT monthly tour distance!)`.
 3. **Include 2–3 Representative Query Examples**:
    Adding 2–3 one-line example `SELECT` queries at the bottom of your schema prompt (covering `GROUP BY`, `ORDER BY ... DESC`, and `WHERE`) anchors the LLM to your exact table and column names on the first try.
-
----
-
-## 5. Testing Your Database Integration
-
-Once your schema prompt is active, test the generated SQL and retrieval output directly via `POST /v1/retrieve` before testing in the Chat UI:
-
-```bash
-curl -s -X POST http://localhost:8080/v1/retrieve \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "List all customers sorted descending by their total order volume.",
-    "top_n": 4,
-    "reranker": "fast"
-  }' | jq .
-```
-
-Look for the chunks with `"doc_id": "..._sql_live_query_result"` or `"doc_id": "external_attached_database"` in the JSON response:
-- Their headers display the exact `SELECT` statements generated by the LLM.
-- Their bodies contain the deterministic Markdown tables returned by each database.

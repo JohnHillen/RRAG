@@ -7,7 +7,7 @@ pub struct AppConfig {
     pub surreal_pass: String,
     pub surreal_ns: String,
     pub surreal_db: String,
-    pub external_surreal_url: Option<String>,
+    pub external_db_url: Option<String>,
     pub external_surreal_user: String,
     pub external_surreal_pass: String,
     pub external_surreal_ns: String,
@@ -31,7 +31,8 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Self {
-        let external_surreal_url = env::var("EXTERNAL_SURREAL_URL")
+        let external_db_url = env::var("EXTERNAL_DB_URL")
+            .or_else(|_| env::var("EXTERNAL_SURREAL_URL"))
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
@@ -50,7 +51,7 @@ impl AppConfig {
                 .unwrap_or_else(|_| "root_secret_password_change_me".into()),
             surreal_ns: env::var("SURREAL_NS").unwrap_or_else(|_| "rag_namespace".into()),
             surreal_db: env::var("SURREAL_DB").unwrap_or_else(|_| "knowledge_base".into()),
-            external_surreal_url,
+            external_db_url,
             external_surreal_user: env::var("EXTERNAL_SURREAL_USER")
                 .unwrap_or_else(|_| "root".into()),
             external_surreal_pass: env::var("EXTERNAL_SURREAL_PASS")

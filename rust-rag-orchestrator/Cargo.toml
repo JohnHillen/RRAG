@@ -27,4 +27,5 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 dotenvy = "0.15"
 pdf-extract = "0.7"
 html2text = "0.12"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }
 

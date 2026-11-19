@@ -225,20 +225,34 @@ pub async fn finalize_retrieval_for_active_showcase(
     };
 
     if let Some(ref ext_schema) = state.config.external_db_schema_prompt {
-        let target_client = state.external_db.as_ref().unwrap_or(&state.db);
         let t_ext = std::time::Instant::now();
-        if let Some(ext_chunk) = crate::text_to_sql::execute_dynamic_text_to_sql_on_client(
-            state,
-            target_client,
-            query,
-            primary_anchor.as_ref(),
-            ext_schema,
-            "external_db_live_query_result",
-            "external_attached_database",
-            "🔌 [Externe DB Text-to-SQL]",
-        )
-        .await
-        {
+        let ext_chunk_opt = if let Some(ref ext_client) = state.external_db {
+            crate::text_to_sql::execute_dynamic_text_to_sql_on_external(
+                state,
+                ext_client,
+                query,
+                primary_anchor.as_ref(),
+                ext_schema,
+                "external_db_live_query_result",
+                "external_attached_database",
+                "🔌 [Externe SQL-DB Text-to-SQL]",
+            )
+            .await
+        } else {
+            crate::text_to_sql::execute_dynamic_text_to_sql_on_client(
+                state,
+                &state.db,
+                query,
+                primary_anchor.as_ref(),
+                ext_schema,
+                "external_db_live_query_result",
+                "external_attached_database",
+                "🔌 [Externe DB Text-to-SQL]",
+            )
+            .await
+        };
+
+        if let Some(ext_chunk) = ext_chunk_opt {
             *db_ms += t_ext.elapsed().as_millis() as u64;
             let insert_idx = chunks.len().min(2);
             chunks.insert(insert_idx, ext_chunk);
