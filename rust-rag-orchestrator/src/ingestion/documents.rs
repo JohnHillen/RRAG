@@ -84,16 +84,92 @@ pub async fn deduplicate_documents_handler(State(state): State<AppState>) -> imp
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SwitchProjectDbRequest {
+    pub db_name: String,
+}
+
+/// Lists all SurrealDB project databases in the namespace (`GET /v1/db/projects`)
+pub async fn list_project_databases_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let active_db = state.db.get_active_db();
+    match state.db.list_project_databases().await {
+        Ok(dbs) => (
+            StatusCode::OK,
+            Json(json!({
+                "active_db": active_db,
+                "databases": dbs
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Creates (if not exists) and switches the active SurrealDB project database (`POST /v1/db/projects`)
+pub async fn switch_or_create_project_db_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SwitchProjectDbRequest>,
+) -> impl IntoResponse {
+    match state.db.create_or_switch_project_database(&req.db_name).await {
+        Ok(active_db) => {
+            info!("Switched active SurrealDB project database to '{}'", active_db);
+            let dbs = state.db.list_project_databases().await.unwrap_or_default();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "active",
+                    "active_db": active_db,
+                    "databases": dbs
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Deletes a SurrealDB project database (`DELETE /v1/db/projects/:db_name`)
+pub async fn delete_project_database_handler(
+    State(state): State<AppState>,
+    Path(db_name): Path<String>,
+) -> impl IntoResponse {
+    match state.db.delete_project_database(&db_name).await {
+        Ok(active_db) => {
+            info!("Deleted SurrealDB project database '{}', active_db='{}'", db_name, active_db);
+            let dbs = state.db.list_project_databases().await.unwrap_or_default();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "deleted",
+                    "deleted_db": db_name,
+                    "active_db": active_db,
+                    "databases": dbs
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
 /// Exports the full SurrealDB knowledge base as a downloadable `.surql` backup file (`GET /v1/db/export`)
 pub async fn export_surreal_db_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let active_db = state.db.get_active_db();
+    let disp = format!(
+        "attachment; filename=\"surrealdb_backup_{}.surql\"",
+        active_db
+    );
     match state.db.export_database_surql().await {
         Ok(surql_data) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/octet-stream; charset=utf-8")
-            .header(
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"surrealdb_knowledge_backup.surql\"",
-            )
+            .header(header::CONTENT_DISPOSITION, disp)
             .body(Body::from(surql_data))
             .unwrap(),
         Err(e) => Response::builder()
@@ -263,7 +339,28 @@ pub async fn ingest_file_handler(
     let mut processed_docs = Vec::new();
     let mut errors = Vec::new();
 
+    struct PendingUploadFile {
+        raw_filename: String,
+        full_title: String,
+        file_hash_id: String,
+        raw_pdf_b64: Option<String>,
+        pipeline_kind: IngestionPipelineKind,
+        file_bytes: Vec<u8>,
+    }
+
+    let mut pending_files: Vec<PendingUploadFile> = Vec::with_capacity(uploaded_files.len());
+
+    // 1. Fast duplicate check & filtering
     for (raw_filename, file_bytes) in uploaded_files {
+        let base_name = raw_filename
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&raw_filename)
+            .trim();
+        if base_name.starts_with('.') || base_name.eq_ignore_ascii_case("thumbs.db") {
+            continue;
+        }
+
         let full_title = format_title_with_category(&raw_filename, category.as_deref());
         let file_hash_id = db::content_hash_id(&file_bytes);
 
@@ -303,65 +400,161 @@ pub async fn ingest_file_handler(
         } else {
             None
         };
-        let fname_clone = raw_filename.clone();
-        let pipeline_kind =
-            IngestionPipelineKind::from_str_opt(pipeline_str.as_deref()).resolve(&raw_filename, &file_bytes);
-        let extraction_res = tokio::task::spawn_blocking(move || match pipeline_kind {
-            IngestionPipelineKind::LegalStatute => {
-                pipelines::legal::extract_legal_document_text(&fname_clone, &file_bytes)
-            }
-            _ => InferenceClient::extract_text_from_bytes(&fname_clone, &file_bytes),
-        })
-        .await
-        .unwrap_or_else(|e| Err(anyhow::anyhow!("Text extraction task error: {}", e)));
+        let pipeline_kind = IngestionPipelineKind::from_str_opt(pipeline_str.as_deref())
+            .resolve(&raw_filename, &file_bytes);
 
-        match extraction_res {
-            Ok(extracted_text) => {
-                match process_document_ingestion(
+        pending_files.push(PendingUploadFile {
+            raw_filename,
+            full_title,
+            file_hash_id,
+            raw_pdf_b64,
+            pipeline_kind,
+            file_bytes,
+        });
+    }
+
+    // 2. Parallel Multi-Core Text / PDF / OCR Extraction across all files in the batch
+    let t_extract_start = std::time::Instant::now();
+    let mut extraction_handles = Vec::with_capacity(pending_files.len());
+    for item in pending_files {
+        let fname_clone = item.raw_filename.clone();
+        let p_kind = item.pipeline_kind;
+        let handle = tokio::task::spawn_blocking(move || {
+            let res = match p_kind {
+                IngestionPipelineKind::LegalStatute => {
+                    pipelines::legal::extract_legal_document_text(&fname_clone, &item.file_bytes)
+                }
+                _ => InferenceClient::extract_text_from_bytes(&fname_clone, &item.file_bytes),
+            };
+            (item, res)
+        });
+        extraction_handles.push(handle);
+    }
+
+    struct PreparedBatchDoc {
+        full_title: String,
+        doc_id: String,
+        raw_pdf_b64: Option<String>,
+        prepared: pipelines::PreparedDocumentPipeline,
+    }
+
+    let mut prepared_docs: Vec<PreparedBatchDoc> = Vec::with_capacity(extraction_handles.len());
+    for handle in extraction_handles {
+        match handle.await {
+            Ok((item, Ok(extracted_text))) => {
+                match pipelines::run_text_ingestion_pipeline(
                     &state,
-                    Some(file_hash_id),
-                    &full_title,
-                    "file_upload",
+                    item.pipeline_kind,
+                    &item.full_title,
                     &extracted_text,
-                    replace_revision,
-                    category.as_deref(),
                     extract_graph,
-                    pipeline_kind,
-                    raw_pdf_b64.as_deref(),
                 )
                 .await
                 {
-                    Ok(val) => {
-                        let is_dup = val["skipped_duplicate"].as_bool().unwrap_or(false);
-                        let is_rev = val["replaced_revision"].as_bool().unwrap_or(false);
-                        let chunks = val["chunks_indexed"].as_u64().unwrap_or(0) as usize;
-                        let g_ent =
-                            val["graph_entities_extracted"].as_u64().unwrap_or(0) as usize;
-                        let g_rel =
-                            val["graph_relations_extracted"].as_u64().unwrap_or(0) as usize;
-                        total_graph_entities += g_ent;
-                        total_graph_relations += g_rel;
-                        if is_dup {
-                            skipped_duplicates += 1;
-                        } else {
-                            total_chunks += chunks;
-                        }
-                        if is_rev {
-                            replaced_revisions += 1;
-                        }
-                        processed_docs.push(json!({
-                            "filename": full_title,
-                            "chunks_indexed": chunks,
-                            "graph_entities_extracted": g_ent,
-                            "graph_relations_extracted": g_rel,
-                            "skipped_duplicate": is_dup,
-                            "replaced_revision": is_rev
-                        }));
+                    Ok(prepared) => {
+                        prepared_docs.push(PreparedBatchDoc {
+                            full_title: item.full_title,
+                            doc_id: item.file_hash_id,
+                            raw_pdf_b64: item.raw_pdf_b64,
+                            prepared,
+                        });
                     }
-                    Err(e) => errors.push(format!("{}: {}", full_title, e)),
+                    Err(e) => errors.push(format!("{}: {}", item.full_title, e)),
                 }
             }
-            Err(e) => errors.push(format!("{} (Text extraction): {}", full_title, e)),
+            Ok((item, Err(e))) => {
+                errors.push(format!("{} (Text extraction): {}", item.full_title, e))
+            }
+            Err(e) => errors.push(format!("Extraction task join error: {}", e)),
+        }
+    }
+    let extract_batch_ms = t_extract_start.elapsed().as_millis();
+
+    // 3. Cross-File Batched GPU/CPU Embedding (single batched embedding run across all files in this request)
+    if !prepared_docs.is_empty() {
+        let mut all_batch_chunks: Vec<String> = Vec::new();
+        for doc in &prepared_docs {
+            all_batch_chunks.extend(doc.prepared.chunks.iter().cloned());
+        }
+
+        let t_emb_start = std::time::Instant::now();
+        match state.inference.embed_texts(&all_batch_chunks).await {
+            Ok(all_embeddings) => {
+                let embed_batch_ms = t_emb_start.elapsed().as_millis();
+                let mut emb_iter = all_embeddings.into_iter();
+                let batch_doc_count = prepared_docs.len();
+                let batch_chunk_count = all_batch_chunks.len();
+
+                let t_db_start = std::time::Instant::now();
+                for doc in prepared_docs {
+                    let chunk_len = doc.prepared.chunks.len();
+                    let mut indexed_chunks = Vec::with_capacity(chunk_len);
+                    for (idx, chunk_str) in doc.prepared.chunks.into_iter().enumerate() {
+                        if let Some(emb) = emb_iter.next() {
+                            indexed_chunks.push((idx, chunk_str, emb));
+                        }
+                    }
+
+                    let mut replaced_rev = false;
+                    if replace_revision {
+                        if let Ok(replaced) = state
+                            .db
+                            .replace_older_revisions(&doc.full_title, &doc.doc_id)
+                            .await
+                        {
+                            if replaced {
+                                replaced_rev = true;
+                                replaced_revisions += 1;
+                            }
+                        }
+                    }
+
+                    match state
+                        .db
+                        .insert_document_and_chunks(
+                            &doc.doc_id,
+                            &doc.full_title,
+                            "file_upload",
+                            &indexed_chunks,
+                            &doc.prepared.entities,
+                            &doc.prepared.relations,
+                            doc.raw_pdf_b64.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(_) => {
+                            let c_cnt = indexed_chunks.len();
+                            let e_cnt = doc.prepared.entities.len();
+                            let r_cnt = doc.prepared.relations.len();
+                            total_chunks += c_cnt;
+                            total_graph_entities += e_cnt;
+                            total_graph_relations += r_cnt;
+                            processed_docs.push(json!({
+                                "filename": doc.full_title,
+                                "doc_id": doc.doc_id,
+                                "chunks_indexed": c_cnt,
+                                "graph_entities_extracted": e_cnt,
+                                "graph_relations_extracted": r_cnt,
+                                "skipped_duplicate": false,
+                                "replaced_revision": replaced_rev
+                            }));
+                        }
+                        Err(e) => errors.push(format!("{}: {}", doc.full_title, e)),
+                    }
+                }
+                let db_batch_ms = t_db_start.elapsed().as_millis();
+                info!(
+                    "Indexed batch of {} file(s) ({} total chunks) -> parallel_extract={}ms | batched_gpu_embed={}ms | surrealdb={}ms",
+                    batch_doc_count,
+                    batch_chunk_count,
+                    extract_batch_ms,
+                    embed_batch_ms,
+                    db_batch_ms
+                );
+            }
+            Err(e) => {
+                errors.push(format!("Batch embedding error: {}", e));
+            }
         }
     }
 
@@ -389,9 +582,13 @@ pub async fn ingest_file_handler(
 }
 
 fn format_title_with_category(title: &str, category: Option<&str>) -> String {
+    let trimmed = title.trim();
+    if trimmed.starts_with('[') && trimmed.contains("] ") {
+        return trimmed.to_string();
+    }
     match category.map(|c| c.trim()).filter(|c| !c.is_empty()) {
-        Some(cat) => format!("[{}] {}", cat, title.trim()),
-        None => title.trim().to_string(),
+        Some(cat) => format!("[{}] {}", cat, trimmed),
+        None => trimmed.to_string(),
     }
 }
 

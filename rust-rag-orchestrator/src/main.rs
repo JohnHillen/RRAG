@@ -103,9 +103,19 @@ async fn main() -> Result<()> {
         )
         .route("/v1/llm/models", post(chat::discover_llm_models_handler))
         .route("/v1/runpod/status", get(runpod::get_runpod_status_handler))
+        .route("/v1/runpod/gpus", get(runpod::list_runpod_gpus_handler))
         .route("/v1/runpod/config", post(runpod::save_runpod_config_handler))
         .route("/v1/runpod/start", post(runpod::start_runpod_handler))
         .route("/v1/runpod/stop", post(runpod::stop_runpod_handler))
+        .route(
+            "/v1/db/projects",
+            get(documents::list_project_databases_handler)
+                .post(documents::switch_or_create_project_db_handler),
+        )
+        .route(
+            "/v1/db/projects/:db_name",
+            delete(documents::delete_project_database_handler),
+        )
         .route("/v1/db/export", get(documents::export_surreal_db_handler))
         .route("/v1/db/import", post(documents::import_surreal_db_handler))
         .route("/v1/documents", get(documents::list_documents_handler))

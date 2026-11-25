@@ -63,8 +63,13 @@ impl InferenceClient {
         indexed.sort_by_key(|(_, s)| s.len());
 
         let mut all_embeddings: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let batch_size = if current_embed_url.contains(":18081") {
+            64
+        } else {
+            16
+        };
 
-        for batch in indexed.chunks(12) {
+        for batch in indexed.chunks(batch_size) {
             let batch_inputs: Vec<&str> = batch.iter().map(|(_, s)| s.as_str()).collect();
             let payload = json!({
                 "inputs": batch_inputs,

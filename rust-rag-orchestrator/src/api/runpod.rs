@@ -39,6 +39,90 @@ pub struct RunpodConfigPayload {
     pub enable_embedding: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunpodGpuTypeItem {
+    pub id: String,
+    pub display_name: String,
+    pub memory_gb: u64,
+    pub secure_cloud: bool,
+    pub community_cloud: bool,
+    pub secure_price: Option<f64>,
+    pub community_price: Option<f64>,
+    pub lowest_price: Option<f64>,
+    pub secure_stock: Option<String>,
+    pub community_stock: Option<String>,
+    pub available: bool,
+}
+
+fn normalize_gpu_type_id(raw: &str) -> String {
+    match raw.trim() {
+        "A40" => "NVIDIA A40".to_string(),
+        "RTX 4090" => "NVIDIA GeForce RTX 4090".to_string(),
+        "RTX 3090" => "NVIDIA GeForce RTX 3090".to_string(),
+        "RTX A6000" => "NVIDIA RTX A6000".to_string(),
+        "L40S" => "NVIDIA L40S".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_valid_runpod_api_key(k: &str) -> bool {
+    let t = k.trim();
+    !t.is_empty()
+        && !t.eq_ignore_ascii_case("api_key")
+        && !t.eq_ignore_ascii_case("your_runpod_api_key_here")
+        && t.len() >= 12
+}
+
+fn derive_keystream_block(secret_seed: &str, block_idx: usize) -> [u8; 16] {
+    let input = format!("rp_seal_v1:{}:{}", secret_seed, block_idx);
+    let mut h1: u64 = 0xcbf29ce484222325;
+    let mut h2: u64 = 0x84222325cbf29ce4;
+    for (i, &b) in input.as_bytes().iter().enumerate() {
+        h1 ^= b as u64;
+        h1 = h1.wrapping_mul(0x100000001b3).rotate_left(7);
+        h2 ^= (b as u64).wrapping_add(i as u64);
+        h2 = h2.wrapping_mul(0x100000001b3).rotate_left(11);
+    }
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&h1.to_le_bytes());
+    out[8..].copy_from_slice(&h2.to_le_bytes());
+    out
+}
+
+/// Encrypts a credential string using a keystream derived from the instance secret (`surreal_pass`)
+/// so credentials are never stored in plaintext on disk in SurrealKV.
+fn seal_credential(plain: &str, secret_seed: &str) -> String {
+    if plain.is_empty() {
+        return String::new();
+    }
+    let bytes = plain.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        let block = derive_keystream_block(secret_seed, i / 16);
+        out.push(b ^ block[i % 16]);
+    }
+    format!("enc_v1:{}", crate::ingestion::pdf::base64_encode(&out))
+}
+
+/// Decrypts a credential string previously sealed with `seal_credential`.
+fn unseal_credential(stored: &str, secret_seed: &str) -> String {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(b64) = trimmed.strip_prefix("enc_v1:") {
+        let enc_bytes = crate::ingestion::pdf::base64_decode(b64);
+        let mut out = Vec::with_capacity(enc_bytes.len());
+        for (i, &b) in enc_bytes.iter().enumerate() {
+            let block = derive_keystream_block(secret_seed, i / 16);
+            out.push(b ^ block[i % 16]);
+        }
+        String::from_utf8(out).unwrap_or_default()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn default_gpu_type() -> String {
     "NVIDIA A40".to_string()
 }
@@ -76,10 +160,16 @@ pub struct RunpodRuntimeState {
 
 impl Default for RunpodRuntimeState {
     fn default() -> Self {
-        let env_api_key = std::env::var("RUNPOD_API_KEY")
+        let raw_env_key = std::env::var("RUNPOD_API_KEY")
             .unwrap_or_default()
             .trim()
             .to_string();
+        let env_api_key = if is_valid_runpod_api_key(&raw_env_key) {
+            raw_env_key
+        } else {
+            String::new()
+        };
+        let env_ssh_pass = std::env::var("RUNPOD_SSH_PASSPHRASE").unwrap_or_default();
         let env_gpu = std::env::var("RUNPOD_GPU_TYPE")
             .unwrap_or_else(|_| "NVIDIA A40".to_string())
             .trim()
@@ -106,7 +196,7 @@ impl Default for RunpodRuntimeState {
             embed_ready: false,
             api_key: env_api_key,
             ssh_private_key: default_ssh_key,
-            ssh_passphrase: String::new(),
+            ssh_passphrase: env_ssh_pass,
             prev_llm_provider: None,
             prev_llm_base_url: None,
             prev_llm_model: None,
@@ -154,20 +244,14 @@ fn load_default_ssh_key_from_disk() -> String {
     String::new()
 }
 
-/// Restores non-sensitive RunPod preferences (`gpu_type`, `enable_llm`, `llm_model`, `enable_embedding`, `pod_id`)
-/// from SurrealDB (`system_settings:runpod`) on startup, and scrubs any legacy credential fields from disk.
-/// Credentials (`api_key`, `ssh_private_key`, `ssh_passphrase`) are kept strictly in volatile process RAM.
+/// Restores RunPod preferences and encrypted credentials (`api_key_enc`, `ssh_passphrase_enc`, `ssh_private_key_enc`)
+/// from the default SurrealDB database (`system_settings:runpod`) on startup.
 pub async fn restore_runpod_settings_from_db(state: &AppState) {
-    // Scrub any legacy credential fields that might have been stored in SurrealDB previously
-    let _ = state
-        .db
-        .execute_sql(
-            "UPDATE system_settings:runpod SET api_key = NONE, ssh_private_key = NONE, ssh_passphrase = NONE;",
-        )
-        .await;
+    let default_db = &state.config.surreal_db;
+    let secret_seed = &state.config.surreal_pass;
 
-    let sql = "SELECT gpu_type, enable_llm, llm_model, enable_embedding, pod_id FROM system_settings:runpod;";
-    let Ok(res) = state.db.execute_sql(sql).await else {
+    let sql = "SELECT api_key_enc, ssh_private_key_enc, ssh_passphrase_enc, gpu_type, enable_llm, llm_model, enable_embedding, pod_id FROM system_settings:runpod;";
+    let Ok(res) = state.db.execute_sql_on_db(default_db, sql).await else {
         return;
     };
     let arr = extract_result_array(res.first());
@@ -177,8 +261,38 @@ pub async fn restore_runpod_settings_from_db(state: &AppState) {
 
     let snapshot = {
         let mut guard = global_runpod_state().write().unwrap();
+        if let Some(enc_k) = item
+            .get("api_key_enc")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let dec = unseal_credential(enc_k, secret_seed);
+            if is_valid_runpod_api_key(&dec) {
+                guard.api_key = dec;
+            }
+        }
+        if let Some(enc_sk) = item
+            .get("ssh_private_key_enc")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let dec = unseal_credential(enc_sk, secret_seed);
+            if dec.contains("PRIVATE KEY") {
+                guard.ssh_private_key = format!("{}\n", dec.trim());
+            }
+        }
+        if let Some(enc_sp) = item
+            .get("ssh_passphrase_enc")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let dec = unseal_credential(enc_sp, secret_seed);
+            if !dec.is_empty() {
+                guard.ssh_passphrase = dec;
+            }
+        }
         if let Some(gpu) = item.get("gpu_type").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-            guard.gpu_type = gpu.to_string();
+            guard.gpu_type = normalize_gpu_type_id(gpu);
         }
         if let Some(en_llm) = item.get("enable_llm").and_then(|v| v.as_bool()) {
             guard.enable_llm = en_llm;
@@ -199,8 +313,8 @@ pub async fn restore_runpod_settings_from_db(state: &AppState) {
         guard.clone()
     };
 
-    // If an active RunPod API key & unencrypted SSH key exist and a Pod is still running on RunPod, automatically reconnect
-    if !snapshot.api_key.is_empty() && snapshot.ssh_private_key.contains("PRIVATE KEY") {
+    // If an active RunPod API key & valid SSH key exist and a Pod is still running on RunPod, automatically reconnect
+    if is_valid_runpod_api_key(&snapshot.api_key) && snapshot.ssh_private_key.contains("PRIVATE KEY") {
         if let Ok(pub_key) =
             prepare_unlocked_ssh_key(&snapshot.ssh_private_key, &snapshot.ssh_passphrase)
         {
@@ -256,22 +370,46 @@ pub async fn restore_runpod_settings_from_db(state: &AppState) {
     }
 }
 
-/// Persists only non-sensitive RunPod preferences (`gpu_type`, `enable_llm`, `llm_model`, `enable_embedding`, `pod_id`)
-/// to SurrealDB. Sensitive credentials (`api_key`, `ssh_private_key`, `ssh_passphrase`) are NEVER written to SurrealDB.
+/// Persists RunPod preferences and encrypted credentials (`api_key_enc`, `ssh_passphrase_enc`, `ssh_private_key_enc`)
+/// to `system_settings:runpod` in the default SurrealDB database (`state.config.surreal_db`).
+/// Plaintext fields (`api_key`, `ssh_private_key`, `ssh_passphrase`) are always set to `NONE`,
+/// and `system_settings` is excluded from `.surql` exports.
 async fn persist_runpod_settings_to_db(state: &AppState, st: &RunpodRuntimeState) {
+    let default_db = &state.config.surreal_db;
+    let secret_seed = &state.config.surreal_pass;
+
+    let enc_api = if is_valid_runpod_api_key(&st.api_key) {
+        seal_credential(&st.api_key, secret_seed)
+    } else {
+        String::new()
+    };
+    let enc_ssh_key = if st.ssh_private_key.contains("PRIVATE KEY") {
+        seal_credential(&st.ssh_private_key, secret_seed)
+    } else {
+        String::new()
+    };
+    let enc_ssh_pass = if !st.ssh_passphrase.is_empty() {
+        seal_credential(&st.ssh_passphrase, secret_seed)
+    } else {
+        String::new()
+    };
+
     let pod_id_json = match st.pod_id.as_deref() {
         Some(p) if !p.is_empty() => serde_json::to_string(p).unwrap_or_else(|_| "NONE".into()),
         _ => "NONE".to_string(),
     };
     let sql = format!(
-        "UPSERT system_settings:runpod SET api_key = NONE, ssh_private_key = NONE, ssh_passphrase = NONE, gpu_type = {}, enable_llm = {}, llm_model = {}, enable_embedding = {}, pod_id = {}, updated_at = time::now();",
+        "UPSERT system_settings:runpod SET api_key = NONE, ssh_private_key = NONE, ssh_passphrase = NONE, api_key_enc = {}, ssh_private_key_enc = {}, ssh_passphrase_enc = {}, gpu_type = {}, enable_llm = {}, llm_model = {}, enable_embedding = {}, pod_id = {}, updated_at = time::now();",
+        serde_json::to_string(&enc_api).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(&enc_ssh_key).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(&enc_ssh_pass).unwrap_or_else(|_| "\"\"".into()),
         serde_json::to_string(&st.gpu_type).unwrap_or_else(|_| "\"NVIDIA A40\"".into()),
         st.enable_llm,
         serde_json::to_string(&st.llm_model).unwrap_or_else(|_| "\"qwen3:8b\"".into()),
         st.enable_embedding,
         pod_id_json,
     );
-    let _ = state.db.execute_sql(&sql).await;
+    let _ = state.db.execute_sql_on_db(default_db, &sql).await;
 }
 
 /// Checks if the SSH private key can be unlocked with `passphrase`, writes an unencrypted temporary
@@ -369,7 +507,7 @@ fn kill_tunnel_processes() {
 }
 
 fn build_status_json(state: &AppState, st: &RunpodRuntimeState) -> Value {
-    let has_api_key = !st.api_key.trim().is_empty() && st.api_key != "your_runpod_api_key_here";
+    let has_api_key = is_valid_runpod_api_key(&st.api_key);
     let has_ssh_key = st.ssh_private_key.contains("PRIVATE KEY");
     let has_passphrase = !st.ssh_passphrase.is_empty();
     let needs_pass = has_ssh_key && check_key_needs_passphrase(&st.ssh_private_key, &st.ssh_passphrase);
@@ -406,12 +544,157 @@ pub async fn get_runpod_status_handler(State(state): State<AppState>) -> impl In
         if guard.ssh_private_key.is_empty() {
             guard.ssh_private_key = load_default_ssh_key_from_disk();
         }
+        guard.gpu_type = normalize_gpu_type_id(&guard.gpu_type);
         if guard.phase == "running" {
             guard.tunnel_connected = is_tunnel_process_alive();
         }
         guard.clone()
     };
     Json(build_status_json(&state, &st))
+}
+
+/// Queries RunPod's live GraphQL catalog (`https://api.runpod.io/graphql`) for all GPU types,
+/// live Secure/Community hourly pricing, and real-time stock status (`GET /v1/runpod/gpus`).
+pub async fn list_runpod_gpus_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let query = r#"
+    query GpuTypes {
+        gpuTypes {
+            id
+            displayName
+            memoryInGb
+            secureCloud
+            communityCloud
+            securePrice
+            communityPrice
+            anyLow: lowestPrice(input: { gpuCount: 1 }) {
+                uninterruptablePrice
+                stockStatus
+            }
+            secLow: lowestPrice(input: { gpuCount: 1, secureCloud: true }) {
+                uninterruptablePrice
+                stockStatus
+            }
+            comLow: lowestPrice(input: { gpuCount: 1, secureCloud: false }) {
+                uninterruptablePrice
+                stockStatus
+            }
+        }
+    }
+    "#;
+
+    let http = state.db.http_client();
+    let resp_res = http
+        .post("https://api.runpod.io/graphql")
+        .header("Content-Type", "application/json")
+        .json(&json!({ "query": query }))
+        .send()
+        .await;
+
+    let mut gpus: Vec<RunpodGpuTypeItem> = Vec::new();
+
+    if let Ok(resp) = resp_res {
+        if let Ok(val) = resp.json::<Value>().await {
+            if let Some(arr) = val["data"]["gpuTypes"].as_array() {
+                for g in arr {
+                    let id = g["id"].as_str().unwrap_or_default().trim().to_string();
+                    let mem = g["memoryInGb"].as_u64().unwrap_or(0);
+                    if id.is_empty() || id.eq_ignore_ascii_case("unknown") || mem == 0 {
+                        continue;
+                    }
+                    let display_name = g["displayName"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(&id)
+                        .trim()
+                        .to_string();
+                    let secure_cloud = g["secureCloud"].as_bool().unwrap_or(false);
+                    let community_cloud = g["communityCloud"].as_bool().unwrap_or(false);
+                    if !secure_cloud && !community_cloud {
+                        continue;
+                    }
+
+                    let secure_price = if secure_cloud {
+                        g["secLow"]["uninterruptablePrice"]
+                            .as_f64()
+                            .filter(|p| *p > 0.0)
+                            .or_else(|| g["securePrice"].as_f64().filter(|p| *p > 0.0))
+                    } else {
+                        None
+                    };
+
+                    let community_price = if community_cloud {
+                        g["comLow"]["uninterruptablePrice"]
+                            .as_f64()
+                            .filter(|p| *p > 0.0)
+                            .or_else(|| g["communityPrice"].as_f64().filter(|p| *p > 0.0))
+                    } else {
+                        None
+                    };
+
+                    let lowest_price = match (secure_price, community_price) {
+                        (Some(sp), Some(cp)) => Some(sp.min(cp)),
+                        (Some(sp), None) => Some(sp),
+                        (None, Some(cp)) => Some(cp),
+                        (None, None) => g["anyLow"]["uninterruptablePrice"]
+                            .as_f64()
+                            .filter(|p| *p > 0.0),
+                    };
+
+                    let secure_stock = if secure_cloud {
+                        g["secLow"]["stockStatus"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+
+                    let community_stock = if community_cloud {
+                        g["comLow"]["stockStatus"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+
+                    let available = secure_stock.is_some()
+                        || community_stock.is_some()
+                        || g["anyLow"]["stockStatus"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .is_some();
+
+                    gpus.push(RunpodGpuTypeItem {
+                        id,
+                        display_name,
+                        memory_gb: mem,
+                        secure_cloud,
+                        community_cloud,
+                        secure_price,
+                        community_price,
+                        lowest_price,
+                        secure_stock,
+                        community_stock,
+                        available,
+                    });
+                }
+            }
+        }
+    }
+
+    gpus.sort_by(|a, b| {
+        a.memory_gb
+            .cmp(&b.memory_gb)
+            .then_with(|| {
+                let pa = a.lowest_price.unwrap_or(999.0);
+                let pb = b.lowest_price.unwrap_or(999.0);
+                pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.display_name.cmp(&b.display_name))
+    });
+
+    Json(json!({ "gpus": gpus }))
 }
 
 /// Saves and validates RunPod credentials & settings (`POST /v1/runpod/config`)
@@ -461,7 +744,7 @@ pub async fn save_runpod_config_handler(
         match res {
             Ok(_) => {
                 if updated_state.phase == "idle" || updated_state.phase == "error" {
-                    updated_state.message = "✅ RunPod API-Key & SSH-Key erfolgreich geprüft (Zugangsdaten nur im RAM gehalten, nicht in DB gespeichert).".to_string();
+                    updated_state.message = "✅ RunPod API-Key & SSH-Key erfolgreich geprüft und verschlüsselt gespeichert (überlebt Seiten-Reloads & Container-Neustarts).".to_string();
                     if updated_state.phase == "error" {
                         updated_state.phase = "idle".to_string();
                     }
@@ -523,7 +806,7 @@ pub async fn start_runpod_handler(
 
     persist_runpod_settings_to_db(&state, &snapshot).await;
 
-    if snapshot.api_key.trim().is_empty() || snapshot.api_key == "your_runpod_api_key_here" {
+    if !is_valid_runpod_api_key(&snapshot.api_key) {
         let mut guard = global_runpod_state().write().unwrap();
         guard.phase = "error".to_string();
         guard.message = "❌ Bitte zuerst einen gültigen RunPod API-Key (rpa_...) eingeben.".to_string();
@@ -907,10 +1190,10 @@ sleep infinity"#,
             if let Ok(d) = r.json::<Value>().await {
                 let status_str = d["status"].as_str().unwrap_or("PROVISIONING").to_string();
                 let cost = d["costPerHr"].as_f64();
-                let actual_gpu = d["gpu"]["displayName"]
+                let actual_gpu = d["gpu"]["id"]
                     .as_str()
-                    .or_else(|| d["gpu"]["id"].as_str())
-                    .map(|s| s.to_string());
+                    .or_else(|| d["gpu"]["displayName"].as_str())
+                    .map(normalize_gpu_type_id);
 
                 {
                     let mut guard = global_runpod_state().write().unwrap();

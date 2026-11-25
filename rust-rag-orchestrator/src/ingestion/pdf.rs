@@ -296,6 +296,7 @@ impl InferenceClient {
     pub fn extract_text_from_bytes(filename: &str, bytes: &[u8]) -> Result<String> {
         let lower = filename.to_lowercase();
         if lower.ends_with(".pdf") {
+            let mut pdftotext_ran_ok = false;
             if let Ok(mut child) = std::process::Command::new("pdftotext")
                 .args(["-enc", "UTF-8", "-", "-"])
                 .stdin(std::process::Stdio::piped())
@@ -309,6 +310,7 @@ impl InferenceClient {
                 }
                 if let Ok(output) = child.wait_with_output() {
                     if output.status.success() {
+                        pdftotext_ran_ok = true;
                         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         if text.chars().count() >= 25 {
                             return Ok(text);
@@ -317,12 +319,16 @@ impl InferenceClient {
                 }
             }
 
-            let bytes_owned = bytes.to_vec();
-            if let Ok(Ok(text)) =
-                std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&bytes_owned))
-            {
-                if text.trim().chars().count() >= 25 {
-                    return Ok(text);
+            // Only invoke slow pure-Rust `pdf_extract` fallback if `pdftotext` itself failed to parse the PDF.
+            // If `pdftotext` succeeded with < 25 chars, the PDF is a scan without a text layer -> go straight to OCR.
+            if !pdftotext_ran_ok {
+                let bytes_owned = bytes.to_vec();
+                if let Ok(Ok(text)) =
+                    std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&bytes_owned))
+                {
+                    if text.trim().chars().count() >= 25 {
+                        return Ok(text);
+                    }
                 }
             }
 
@@ -331,6 +337,15 @@ impl InferenceClient {
                 filename
             );
             Self::extract_pdf_via_ocr(bytes)
+        } else if lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".png")
+            || lower.ends_with(".webp")
+            || lower.ends_with(".bmp")
+            || lower.ends_with(".tif")
+            || lower.ends_with(".tiff")
+        {
+            Self::extract_image_via_ocr(filename, bytes)
         } else if lower.ends_with(".xml")
             || bytes.trim_ascii_start().starts_with(b"<?xml")
             || bytes.trim_ascii_start().starts_with(b"<dokumente")
@@ -340,9 +355,50 @@ impl InferenceClient {
             let text = html2text::from_read(bytes, 100);
             Ok(text)
         } else {
+            let sample = &bytes[..bytes.len().min(4096)];
+            if sample.contains(&0) {
+                anyhow::bail!(
+                    "Unsupported binary file format '{}' (no text layer).",
+                    filename
+                );
+            }
             let text = String::from_utf8_lossy(bytes).to_string();
             Ok(text)
         }
+    }
+
+    /// Runs Tesseract OCR (`deu+eng`) on a standalone image file (`.jpg`, `.png`, etc.).
+    fn extract_image_via_ocr(filename: &str, bytes: &[u8]) -> Result<String> {
+        let job_id = uuid::Uuid::new_v4().simple().to_string();
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("img");
+        let tmp_img = std::env::temp_dir().join(format!("rag_img_ocr_{}.{}", job_id, ext));
+        std::fs::write(&tmp_img, bytes).context("Failed to write temporary image for OCR")?;
+
+        let output = std::process::Command::new("tesseract")
+            .args([
+                tmp_img.to_str().unwrap_or_default(),
+                "stdout",
+                "-l",
+                "deu+eng",
+            ])
+            .stderr(std::process::Stdio::null())
+            .output();
+        let _ = std::fs::remove_file(&tmp_img);
+
+        let output = output.context("Failed to execute 'tesseract' OCR on image")?;
+        if output.status.success() {
+            let txt = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if txt.chars().count() >= 15 {
+                return Ok(txt);
+            }
+        }
+        anyhow::bail!(
+            "Image '{}' does not contain recognizable text (OCR).",
+            filename
+        )
     }
 
     /// Renders a scanned PDF page-by-page using `pdftoppm` (200 DPI) and extracts text

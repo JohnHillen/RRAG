@@ -8,11 +8,22 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct SurrealClient {
     http: Client,
     config: AppConfig,
+    active_db: Arc<RwLock<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectDatabaseInfo {
+    pub db_name: String,
+    pub is_active: bool,
+    pub is_default: bool,
+    pub document_count: usize,
+    pub chunk_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,15 +78,44 @@ pub struct DocumentSummary {
 
 impl SurrealClient {
     pub fn new(http: Client, config: AppConfig) -> Self {
-        Self { http, config }
+        let initial_db = config.surreal_db.clone();
+        Self {
+            http,
+            config,
+            active_db: Arc::new(RwLock::new(initial_db)),
+        }
     }
 
     pub fn http_client(&self) -> Client {
         self.http.clone()
     }
 
-    /// Executes raw SurrealQL against the `/sql` endpoint.
+    /// Returns the currently active SurrealDB project database name.
+    pub fn get_active_db(&self) -> String {
+        self.active_db
+            .read()
+            .map(|d| d.clone())
+            .unwrap_or_else(|_| self.config.surreal_db.clone())
+    }
+
+    /// Sets the active SurrealDB project database name in memory.
+    pub fn set_active_db(&self, db_name: &str) {
+        let clean = sanitize_db_name(db_name);
+        if !clean.is_empty() {
+            if let Ok(mut guard) = self.active_db.write() {
+                *guard = clean;
+            }
+        }
+    }
+
+    /// Executes raw SurrealQL against the `/sql` endpoint on the currently active project database.
     pub async fn execute_sql(&self, sql: &str) -> Result<Vec<Value>> {
+        let current_db = self.get_active_db();
+        self.execute_sql_on_db(&current_db, sql).await
+    }
+
+    /// Executes raw SurrealQL against the `/sql` endpoint on a specific database within the configured namespace.
+    pub async fn execute_sql_on_db(&self, db_name: &str, sql: &str) -> Result<Vec<Value>> {
         let url = format!("{}/sql", self.config.surreal_url.trim_end_matches('/'));
         let resp = self
             .http
@@ -83,7 +123,7 @@ impl SurrealClient {
             .basic_auth(&self.config.surreal_user, Some(&self.config.surreal_pass))
             .header("Accept", "application/json")
             .header("surreal-ns", &self.config.surreal_ns)
-            .header("surreal-db", &self.config.surreal_db)
+            .header("surreal-db", db_name)
             .body(sql.to_string())
             .send()
             .await
@@ -100,16 +140,178 @@ impl SurrealClient {
         Ok(results)
     }
 
-    /// Loads persisted system LLM settings from SurrealDB (if saved previously).
+    /// Ensures the full Hybrid RAG (HNSW + BM25) & Knowledge Graph schema exists on `db_name`.
+    pub async fn ensure_rag_schema_on_db(&self, db_name: &str) -> Result<()> {
+        let schema_sql = r#"
+DEFINE ANALYZER IF NOT EXISTS rag_analyzer TOKENIZERS class, punct FILTERS lowercase, ascii, snowball(german), snowball(english);
+DEFINE TABLE IF NOT EXISTS document SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS title      ON TABLE document TYPE string;
+DEFINE FIELD IF NOT EXISTS source     ON TABLE document TYPE string;
+DEFINE FIELD IF NOT EXISTS mime_type  ON TABLE document TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS metadata   ON TABLE document TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE document TYPE datetime DEFAULT time::now();
+DEFINE TABLE IF NOT EXISTS chunk SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS doc_id      ON TABLE chunk TYPE string;
+DEFINE FIELD IF NOT EXISTS doc_title   ON TABLE chunk TYPE string;
+DEFINE FIELD IF NOT EXISTS chunk_index ON TABLE chunk TYPE int;
+DEFINE FIELD IF NOT EXISTS content     ON TABLE chunk TYPE string;
+DEFINE FIELD IF NOT EXISTS embedding   ON TABLE chunk TYPE array<float>;
+DEFINE FIELD IF NOT EXISTS metadata    ON TABLE chunk TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE chunk TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_chunk_doc_id    ON TABLE chunk FIELDS doc_id;
+DEFINE INDEX IF NOT EXISTS idx_chunk_doc_title ON TABLE chunk FIELDS doc_title;
+DEFINE INDEX IF NOT EXISTS idx_chunk_bm25 ON TABLE chunk FIELDS content FULLTEXT ANALYZER rag_analyzer BM25(1.2, 0.75) HIGHLIGHTS;
+DEFINE INDEX IF NOT EXISTS idx_chunk_embedding ON TABLE chunk FIELDS embedding HNSW DIMENSION 1024 DIST COSINE EFC 150 M 16;
+DEFINE TABLE IF NOT EXISTS entity SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS name        ON TABLE entity TYPE string;
+DEFINE FIELD IF NOT EXISTS entity_type ON TABLE entity TYPE string;
+DEFINE FIELD IF NOT EXISTS description ON TABLE entity TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_entity_name ON TABLE entity FIELDS name UNIQUE;
+DEFINE TABLE IF NOT EXISTS mentions TYPE RELATION IN chunk OUT entity;
+DEFINE TABLE IF NOT EXISTS relates_to TYPE RELATION IN entity OUT entity;
+DEFINE FIELD IF NOT EXISTS relation_type ON TABLE relates_to TYPE string DEFAULT 'related_to';
+DEFINE FIELD IF NOT EXISTS weight        ON TABLE relates_to TYPE float DEFAULT 1.0;
+"#;
+        self.execute_sql_on_db(db_name, schema_sql).await?;
+        Ok(())
+    }
+
+    /// Lists all project databases in the namespace along with their document and chunk counts.
+    pub async fn list_project_databases(&self) -> Result<Vec<ProjectDatabaseInfo>> {
+        let active = self.get_active_db();
+        let default_db = self.config.surreal_db.clone();
+        let info_res = self
+            .execute_sql_on_db(&default_db, "INFO FOR NS;")
+            .await
+            .unwrap_or_default();
+
+        let mut db_names: Vec<String> = Vec::new();
+        if let Some(dbs_obj) = info_res
+            .first()
+            .and_then(|v| v.get("result"))
+            .and_then(|r| r.get("databases"))
+            .and_then(|d| d.as_object())
+        {
+            for key in dbs_obj.keys() {
+                let clean = key.trim().to_string();
+                if !clean.is_empty() && !db_names.contains(&clean) {
+                    db_names.push(clean);
+                }
+            }
+        }
+
+        if !db_names.contains(&default_db) {
+            db_names.insert(0, default_db.clone());
+        }
+        if !db_names.contains(&active) {
+            db_names.push(active.clone());
+        }
+        db_names.sort();
+        // Always put default_db first
+        if let Some(pos) = db_names.iter().position(|x| x == &default_db) {
+            if pos > 0 {
+                let d = db_names.remove(pos);
+                db_names.insert(0, d);
+            }
+        }
+
+        let mut out = Vec::with_capacity(db_names.len());
+        for name in db_names {
+            let counts = self
+                .execute_sql_on_db(
+                    &name,
+                    "SELECT count() AS c FROM document GROUP ALL; SELECT count() AS c FROM chunk GROUP ALL;",
+                )
+                .await
+                .unwrap_or_default();
+            let doc_cnt = extract_result_array(counts.first())
+                .first()
+                .and_then(|v| v["c"].as_u64())
+                .unwrap_or(0) as usize;
+            let chunk_cnt = extract_result_array(counts.get(1))
+                .first()
+                .and_then(|v| v["c"].as_u64())
+                .unwrap_or(0) as usize;
+            out.push(ProjectDatabaseInfo {
+                is_active: name == active,
+                is_default: name == default_db,
+                db_name: name,
+                document_count: doc_cnt,
+                chunk_count: chunk_cnt,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Creates (if not exists) and switches to a project database, initializing its HNSW + BM25 + Graph schema.
+    pub async fn create_or_switch_project_database(&self, raw_name: &str) -> Result<String> {
+        let clean = sanitize_db_name(raw_name);
+        if clean.is_empty() {
+            anyhow::bail!("Ungültiger Datenbank-/Projektname.");
+        }
+        let define_sql = format!("DEFINE DATABASE IF NOT EXISTS {};", clean);
+        let _ = self
+            .execute_sql_on_db(&self.config.surreal_db, &define_sql)
+            .await;
+        self.ensure_rag_schema_on_db(&clean).await?;
+        self.set_active_db(&clean);
+        let _ = self.save_active_project_db_setting(&clean).await;
+        Ok(clean)
+    }
+
+    /// Deletes a project database (`REMOVE DATABASE <name>`) and switches back to the default database if needed.
+    pub async fn delete_project_database(&self, raw_name: &str) -> Result<String> {
+        let clean = sanitize_db_name(raw_name);
+        if clean.is_empty() {
+            anyhow::bail!("Ungültiger Datenbankname.");
+        }
+        if clean == self.config.surreal_db {
+            anyhow::bail!(
+                "Die Standard-Datenbank '{}' kann nicht gelöscht werden (nutze stattdessen Clean Restore oder Dokumenten-Löschung).",
+                self.config.surreal_db
+            );
+        }
+        if self.get_active_db() == clean {
+            self.set_active_db(&self.config.surreal_db);
+            let _ = self
+                .save_active_project_db_setting(&self.config.surreal_db)
+                .await;
+        }
+        let remove_sql = format!("REMOVE DATABASE IF EXISTS {};", clean);
+        self.execute_sql_on_db(&self.config.surreal_db, &remove_sql)
+            .await?;
+        Ok(self.get_active_db())
+    }
+
+    pub async fn save_active_project_db_setting(&self, db_name: &str) -> Result<()> {
+        let sql = format!(
+            "UPSERT system_settings:app SET active_project_db = {}, updated_at = time::now();",
+            serde_json::to_string(db_name)?
+        );
+        self.execute_sql_on_db(&self.config.surreal_db, &sql)
+            .await?;
+        Ok(())
+    }
+
+    /// Loads persisted system LLM settings (and active project database) from the default SurrealDB database.
     pub async fn get_system_llm_settings(
         &self,
     ) -> Result<Option<(String, String, Option<String>, String)>> {
         let sql =
-            "SELECT llm_provider, llm_base_url, llm_api_key, llm_model FROM system_settings:app;";
-        let res = self.execute_sql(sql).await?;
+            "SELECT llm_provider, llm_base_url, llm_api_key, llm_model, active_project_db FROM system_settings:app;";
+        let res = self
+            .execute_sql_on_db(&self.config.surreal_db, sql)
+            .await?;
         if let Some(first_resp) = res.first() {
             if let Some(arr) = first_resp.get("result").and_then(|v| v.as_array()) {
                 if let Some(item) = arr.first() {
+                    if let Some(proj_db) = item
+                        .get("active_project_db")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        self.set_active_db(proj_db);
+                    }
                     let prov = item
                         .get("llm_provider")
                         .and_then(|v| v.as_str())
@@ -138,7 +340,7 @@ impl SurrealClient {
         Ok(None)
     }
 
-    /// Persists system LLM settings into SurrealDB so they survive restarts and setup.sh.
+    /// Persists system LLM settings into the default SurrealDB database so they survive restarts and project switches.
     pub async fn save_system_llm_settings(
         &self,
         provider: &str,
@@ -151,19 +353,21 @@ impl SurrealClient {
             _ => "NONE".to_string(),
         };
         let sql = format!(
-            "UPSERT system_settings:app SET llm_provider = {}, llm_base_url = {}, llm_model = {}, llm_api_key = {}, updated_at = time::now();",
+            "UPSERT system_settings:app SET llm_provider = {}, llm_base_url = {}, llm_model = {}, llm_api_key = {}, active_project_db = {}, updated_at = time::now();",
             serde_json::to_string(provider)?,
             serde_json::to_string(base_url)?,
             serde_json::to_string(model)?,
-            key_json
+            key_json,
+            serde_json::to_string(&self.get_active_db())?
         );
-        self.execute_sql(&sql).await?;
+        self.execute_sql_on_db(&self.config.surreal_db, &sql).await?;
         Ok(())
     }
 
-    /// Exports the entire SurrealDB knowledge base (`GET /export`) as a `.surql` dump,
+    /// Exports the currently active SurrealDB project database (`GET /export`) as a `.surql` dump,
     /// stripping internal `system_settings` records so API keys are never included in backups.
     pub async fn export_database_surql(&self) -> Result<String> {
+        let active_db = self.get_active_db();
         let url = format!("{}/export", self.config.surreal_url.trim_end_matches('/'));
         let resp = self
             .http
@@ -171,7 +375,7 @@ impl SurrealClient {
             .basic_auth(&self.config.surreal_user, Some(&self.config.surreal_pass))
             .header("Accept", "application/octet-stream")
             .header("surreal-ns", &self.config.surreal_ns)
-            .header("surreal-db", &self.config.surreal_db)
+            .header("surreal-db", &active_db)
             .send()
             .await
             .context("Failed to request SurrealDB /export")?;
@@ -270,6 +474,7 @@ impl SurrealClient {
     }
 
     async fn send_surreal_import_batch(&self, url: &str, batch_surql: &str) -> Result<()> {
+        let active_db = self.get_active_db();
         let resp = self
             .http
             .post(url)
@@ -277,7 +482,7 @@ impl SurrealClient {
             .header("Accept", "application/json")
             .header("Content-Type", "application/octet-stream")
             .header("surreal-ns", &self.config.surreal_ns)
-            .header("surreal-db", &self.config.surreal_db)
+            .header("surreal-db", &active_db)
             .body(batch_surql.to_string())
             .send()
             .await
@@ -289,6 +494,38 @@ impl SurrealClient {
             anyhow::bail!("SurrealDB /import HTTP {}: {}", status, body_txt);
         }
         Ok(())
+    }
+}
+
+pub fn sanitize_db_name(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for c in input.trim().to_lowercase().chars() {
+        match c {
+            'ä' => out.push_str("ae"),
+            'ö' => out.push_str("oe"),
+            'ü' => out.push_str("ue"),
+            'ß' => out.push_str("ss"),
+            c if c.is_ascii_alphanumeric() => out.push(c),
+            '_' | '-' | ' ' => {
+                if !out.ends_with('_') && !out.is_empty() {
+                    out.push('_');
+                }
+            }
+            _ => {}
+        }
+    }
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed
+        .chars()
+        .next()
+        .map_or(false, |c| !c.is_ascii_alphabetic())
+    {
+        format!("db_{}", trimmed)
+    } else {
+        trimmed
     }
 }
 

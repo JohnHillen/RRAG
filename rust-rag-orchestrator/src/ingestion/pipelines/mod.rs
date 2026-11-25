@@ -1,3 +1,4 @@
+pub mod invoice;
 pub mod legal;
 
 use crate::{ingestion::InferenceClient, AppState};

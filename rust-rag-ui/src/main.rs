@@ -232,6 +232,41 @@ pub struct ChatSession {
     pub id: usize,
     pub title: String,
     pub messages: Vec<StoredChatMessage>,
+    #[serde(default)]
+    pub project_db: Option<String>,
+}
+
+fn session_belongs_to_project(sess: &ChatSession, active_db: &str) -> bool {
+    let sess_db = sess
+        .project_db
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("knowledge_base");
+    sess_db == active_db
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectDatabaseItem {
+    pub db_name: String,
+    pub is_active: bool,
+    pub is_default: bool,
+    pub document_count: usize,
+    pub chunk_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunpodGpuTypeItem {
+    pub id: String,
+    pub display_name: String,
+    pub memory_gb: u64,
+    pub secure_cloud: bool,
+    pub community_cloud: bool,
+    pub secure_price: Option<f64>,
+    pub community_price: Option<f64>,
+    pub lowest_price: Option<f64>,
+    pub secure_stock: Option<String>,
+    pub community_stock: Option<String>,
+    pub available: bool,
 }
 
 const STORAGE_KEY_SESSIONS: &str = "rust_rag_chat_sessions_v1";
@@ -245,6 +280,72 @@ const STORAGE_KEY_TEMPERATURE: &str = "rust_rag_temperature_v1";
 const STORAGE_KEY_LLM_MODEL: &str = "rust_rag_llm_model_v1";
 const STORAGE_KEY_LLM_PROVIDER: &str = "rust_rag_llm_provider_v1";
 const STORAGE_KEY_LLM_URL: &str = "rust_rag_llm_url_v1";
+const STORAGE_KEY_RP_API_SEALED: &str = "rust_rag_rp_api_sealed_v1";
+const STORAGE_KEY_RP_PASS_SEALED: &str = "rust_rag_rp_pass_sealed_v1";
+
+fn xor_hex_seal(plain: &str) -> String {
+    if plain.is_empty() {
+        return String::new();
+    }
+    let key = b"rust_rag_studio_local_vault_2026";
+    let mut hex = String::with_capacity(plain.len() * 2);
+    for (i, &b) in plain.as_bytes().iter().enumerate() {
+        let enc = b ^ key[i % key.len()];
+        hex.push_str(&format!("{:02x}", enc));
+    }
+    hex
+}
+
+fn xor_hex_unseal(hex: &str) -> String {
+    let trimmed = hex.trim();
+    if trimmed.is_empty() || trimmed.len() % 2 != 0 {
+        return String::new();
+    }
+    let key = b"rust_rag_studio_local_vault_2026";
+    let mut bytes = Vec::with_capacity(trimmed.len() / 2);
+    for i in (0..trimmed.len()).step_by(2) {
+        if let Ok(b) = u8::from_str_radix(&trimmed[i..i + 2], 16) {
+            bytes.push(b ^ key[(i / 2) % key.len()]);
+        } else {
+            return String::new();
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_default()
+}
+
+fn save_rp_creds_to_storage(api_key: Option<&str>, ssh_pass: Option<&str>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Some(k) = api_key.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let _ = storage.set_item(STORAGE_KEY_RP_API_SEALED, &xor_hex_seal(k));
+            }
+            if let Some(p) = ssh_pass.filter(|s| !s.is_empty()) {
+                let _ = storage.set_item(STORAGE_KEY_RP_PASS_SEALED, &xor_hex_seal(p));
+            }
+        }
+    }
+}
+
+fn load_rp_creds_from_storage() -> (Option<String>, Option<String>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let api = storage
+                .get_item(STORAGE_KEY_RP_API_SEALED)
+                .ok()
+                .flatten()
+                .map(|h| xor_hex_unseal(&h))
+                .filter(|s| !s.trim().is_empty());
+            let pass = storage
+                .get_item(STORAGE_KEY_RP_PASS_SEALED)
+                .ok()
+                .flatten()
+                .map(|h| xor_hex_unseal(&h))
+                .filter(|s| !s.is_empty());
+            return (api, pass);
+        }
+    }
+    (None, None)
+}
 
 fn load_llm_pref_from_storage() -> Option<(String, String, String)> {
     if let Some(win) = web_sys::window() {
@@ -461,6 +562,7 @@ fn load_sessions_from_storage() -> Vec<ChatSession> {
         id: 1,
         title: "Neuer Chat".to_string(),
         messages: vec![default_welcome_stored()],
+        project_db: None,
     }]
 }
 
@@ -1152,13 +1254,22 @@ fn App() -> impl IntoView {
     let (next_session_id, set_next_session_id) = create_signal(max_session_id + 1);
     let (messages, set_messages) = create_signal(initial_ui_msgs);
 
+    let (active_project_db, set_active_project_db) = create_signal("knowledge_base".to_string());
+    let (project_databases, set_project_databases) =
+        create_signal(Vec::<ProjectDatabaseItem>::new());
+    let last_session_per_db = create_rw_signal(std::collections::HashMap::<String, usize>::new());
+
     // Speichert die Nachrichten des aktuell geöffneten Chats in `chat_sessions` + `localStorage`
     let persist_current_chat = move |custom_title: Option<String>| {
         let cur_id = active_session_id.get_untracked();
+        let cur_db = active_project_db.get_untracked();
         let stored_msgs = ui_to_stored_messages(&messages.get_untracked());
         set_chat_sessions.update(|sessions| {
             if let Some(sess) = sessions.iter_mut().find(|s| s.id == cur_id) {
                 sess.messages = stored_msgs;
+                if sess.project_db.as_deref().unwrap_or("").trim().is_empty() {
+                    sess.project_db = Some(cur_db.clone());
+                }
                 if let Some(new_title) = custom_title {
                     if sess.title == "Neuer Chat" || sess.title.starts_with("Chat #") {
                         sess.title = new_title;
@@ -1166,6 +1277,9 @@ fn App() -> impl IntoView {
                 }
             }
             save_sessions_to_storage(sessions);
+        });
+        last_session_per_db.update(|m| {
+            m.insert(cur_db, cur_id);
         });
     };
 
@@ -1191,6 +1305,72 @@ fn App() -> impl IntoView {
     // --- Chat-Eingabe-Historie (Pfeiltaste Hoch / Runter) ---
     let (history_cursor, set_history_cursor) = create_signal(None::<usize>);
     let (draft_before_history, set_draft_before_history) = create_signal(String::new());
+
+    // Stellt sicher, dass beim Wechsel einer Projekt-Datenbank ein zu diesem Projekt gehörender Chat aktiv ist
+    let activate_chat_for_project = move |target_db: String| {
+        if is_loading.get_untracked() {
+            return;
+        }
+        let cur_id = active_session_id.get_untracked();
+        let sessions_snap = chat_sessions.get_untracked();
+
+        if let Some(cur_sess) = sessions_snap.iter().find(|s| s.id == cur_id) {
+            if session_belongs_to_project(cur_sess, &target_db) {
+                last_session_per_db.update(|m| {
+                    m.insert(target_db, cur_id);
+                });
+                return;
+            }
+        }
+
+        let preferred_id = last_session_per_db.get_untracked().get(&target_db).copied();
+        let existing_target = preferred_id
+            .and_then(|pid| {
+                sessions_snap
+                    .iter()
+                    .find(|s| s.id == pid && session_belongs_to_project(s, &target_db))
+            })
+            .or_else(|| {
+                sessions_snap
+                    .iter()
+                    .find(|s| session_belongs_to_project(s, &target_db))
+            })
+            .cloned();
+
+        if let Some(found) = existing_target {
+            let ui_msgs = stored_to_ui_messages(&found.messages, next_msg_id);
+            set_active_session_id.set(found.id);
+            set_messages.set(ui_msgs);
+            set_chat_attachments.set(Vec::new());
+            set_history_cursor.set(None);
+            set_attachment_error.set(None);
+            last_session_per_db.update(|m| {
+                m.insert(target_db, found.id);
+            });
+        } else {
+            let new_id = next_session_id.get_untracked();
+            set_next_session_id.set(new_id + 1);
+            let new_session = ChatSession {
+                id: new_id,
+                title: "Neuer Chat".to_string(),
+                messages: vec![default_welcome_stored()],
+                project_db: Some(target_db.clone()),
+            };
+            let ui_msgs = stored_to_ui_messages(&new_session.messages, next_msg_id);
+            set_chat_sessions.update(|sessions| {
+                sessions.insert(0, new_session);
+                save_sessions_to_storage(sessions);
+            });
+            set_active_session_id.set(new_id);
+            set_messages.set(ui_msgs);
+            set_chat_attachments.set(Vec::new());
+            set_history_cursor.set(None);
+            set_attachment_error.set(None);
+            last_session_per_db.update(|m| {
+                m.insert(target_db, new_id);
+            });
+        }
+    };
 
     // --- Modal & Ingestion Signals ---
     let (show_ingest_modal, set_show_ingest_modal) = create_signal(false);
@@ -1241,6 +1421,18 @@ fn App() -> impl IntoView {
                     let list: Vec<DocumentItem> =
                         serde_json::from_value(json["documents"].clone()).unwrap_or_default();
                     set_stored_docs.set(list);
+                }
+            }
+            if let Ok(resp) = Request::get("/v1/db/projects").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(act) = json["active_db"].as_str().filter(|s| !s.is_empty()) {
+                        let act_str = act.to_string();
+                        set_active_project_db.set(act_str.clone());
+                        activate_chat_for_project(act_str);
+                    }
+                    let list: Vec<ProjectDatabaseItem> =
+                        serde_json::from_value(json["databases"].clone()).unwrap_or_default();
+                    set_project_databases.set(list);
                 }
             }
         });
@@ -1336,15 +1528,81 @@ fn App() -> impl IntoView {
     let (rp_ssh_pass_input, set_rp_ssh_pass_input) = create_signal(String::new());
     let (rp_show_ssh_pass, set_rp_show_ssh_pass) = create_signal(false);
     let (rp_polling, set_rp_polling) = create_signal(false);
+    let (rp_gpu_catalog, set_rp_gpu_catalog) = create_signal(Vec::<RunpodGpuTypeItem>::new());
+    let (rp_only_available_gpus, set_rp_only_available_gpus) = create_signal(false);
+    let (rp_loading_gpus, set_rp_loading_gpus) = create_signal(false);
     let rp_ssh_file_input_ref = create_node_ref::<leptos::html::Input>();
 
-    // --- SurrealDB Backup (Import / Export) Signals ---
+    // --- SurrealDB Multi-Project Database & Backup (Import / Export) Signals ---
+    let (new_project_db_input, set_new_project_db_input) = create_signal(String::new());
+    let (show_sidebar_new_db, set_show_sidebar_new_db) = create_signal(false);
     let (db_import_file, set_db_import_file) = create_signal(None::<web_sys::File>);
     let (db_import_file_label, set_db_import_file_label) = create_signal(String::new());
     let (db_import_mode, set_db_import_mode) = create_signal("merge".to_string());
     let (is_importing_db, set_is_importing_db) = create_signal(false);
     let (db_backup_status, set_db_backup_status) = create_signal(String::new());
     let db_import_input_ref = create_node_ref::<leptos::html::Input>();
+
+    let refresh_project_databases = move || {
+        spawn_local(async move {
+            if let Ok(resp) = Request::get("/v1/db/projects").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(act) = json["active_db"].as_str().filter(|s| !s.is_empty()) {
+                        let act_str = act.to_string();
+                        set_active_project_db.set(act_str.clone());
+                        activate_chat_for_project(act_str);
+                    }
+                    let list: Vec<ProjectDatabaseItem> =
+                        serde_json::from_value(json["databases"].clone()).unwrap_or_default();
+                    set_project_databases.set(list);
+                }
+            }
+        });
+    };
+
+    let switch_or_create_project_db = move |target_db: String| {
+        if is_loading.get_untracked() {
+            return;
+        }
+        let trimmed = target_db.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        // Aktuellen Chat noch unter dem bisherigen Projekt sichern, bevor die Projekt-DB wechselt
+        persist_current_chat(None);
+
+        spawn_local(async move {
+            let payload = serde_json::json!({ "db_name": trimmed });
+            if let Ok(resp) = Request::post("/v1/db/projects")
+                .header("Content-Type", "application/json")
+                .body(payload.to_string())
+                .unwrap()
+                .send()
+                .await
+            {
+                if resp.ok() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        let act = json["active_db"]
+                            .as_str()
+                            .unwrap_or(&trimmed)
+                            .to_string();
+                        set_active_project_db.set(act.clone());
+                        let list: Vec<ProjectDatabaseItem> =
+                            serde_json::from_value(json["databases"].clone()).unwrap_or_default();
+                        set_project_databases.set(list);
+
+                        // Automatisch zum passenden Chat des gewählten Projekts wechseln (oder neuen anlegen)
+                        activate_chat_for_project(act);
+
+                        refresh_documents();
+                        refresh_crm_employees();
+                        refresh_fleet_data();
+                        refresh_webstore_data();
+                    }
+                }
+            }
+        });
+    };
 
     let load_llm_config = move || {
         spawn_local(async move {
@@ -1447,10 +1705,61 @@ fn App() -> impl IntoView {
         phase
     };
 
+    let refresh_runpod_gpus = move || {
+        set_rp_loading_gpus.set(true);
+        spawn_local(async move {
+            if let Ok(resp) = Request::get("/v1/runpod/gpus").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let list: Vec<RunpodGpuTypeItem> =
+                        serde_json::from_value(json["gpus"].clone()).unwrap_or_default();
+                    if !list.is_empty() {
+                        set_rp_gpu_catalog.set(list);
+                    }
+                }
+            }
+            set_rp_loading_gpus.set(false);
+        });
+    };
+
     let refresh_runpod_status = move || {
+        if rp_gpu_catalog.get_untracked().is_empty() && !rp_loading_gpus.get_untracked() {
+            refresh_runpod_gpus();
+        }
         spawn_local(async move {
             if let Ok(resp) = Request::get("/v1/runpod/status").send().await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Ok(mut json) = resp.json::<serde_json::Value>().await {
+                    let has_api = json["has_api_key"].as_bool().unwrap_or(false);
+                    let needs_pass = json["ssh_key_needs_passphrase"].as_bool().unwrap_or(false);
+                    let has_pass = json["has_ssh_passphrase"].as_bool().unwrap_or(false);
+
+                    if !has_api || needs_pass || !has_pass {
+                        let (cached_api, cached_pass) = load_rp_creds_from_storage();
+                        let should_restore_api = !has_api && cached_api.is_some();
+                        let should_restore_pass = (needs_pass || !has_pass) && cached_pass.is_some();
+
+                        if should_restore_api || should_restore_pass {
+                            let payload = serde_json::json!({
+                                "api_key": if should_restore_api { cached_api } else { None },
+                                "ssh_passphrase": if should_restore_pass { cached_pass } else { None },
+                                "gpu_type": json["gpu_type"].as_str().unwrap_or("NVIDIA A40"),
+                                "enable_llm": json["enable_llm"].as_bool().unwrap_or(true),
+                                "llm_model": json["llm_model"].as_str().unwrap_or("qwen3:8b"),
+                                "enable_embedding": json["enable_embedding"].as_bool().unwrap_or(true),
+                            });
+                            if let Ok(r_sync) = Request::post("/v1/runpod/config")
+                                .header("Content-Type", "application/json")
+                                .body(payload.to_string())
+                                .unwrap()
+                                .send()
+                                .await
+                            {
+                                if let Ok(synced_json) = r_sync.json::<serde_json::Value>().await {
+                                    json = synced_json;
+                                }
+                            }
+                        }
+                    }
+
                     let phase = apply_runpod_json(&json);
                     let is_busy = phase == "deploying"
                         || phase == "waiting_ssh"
@@ -1486,6 +1795,7 @@ fn App() -> impl IntoView {
     create_effect(move |_| {
         load_llm_config();
         refresh_runpod_status();
+        refresh_project_databases();
         refresh_documents();
         refresh_crm_employees();
         refresh_fleet_data();
@@ -1576,11 +1886,49 @@ fn App() -> impl IntoView {
             let mut total_relations = 0u64;
             let mut error_messages: Vec<String> = Vec::new();
 
+            // Adaptive Multi-File Batching:
+            // Fasst bis zu 16 kleine/mittlere Dateien (max. ~20 MB pro Paket) zusammen, damit PDF/OCR-Extraktion
+            // im Backend parallel auf allen CPU-Kernen läuft und alle Chunks in einem einzigen gebündelten
+            // GPU-Batch über den SSH-Tunnel berechnet werden (statt 400 einzelner 1-Chunk-Requests).
+            let max_files_per_batch: usize = if extract_graph_val && pipeline_val != "legal" {
+                4
+            } else {
+                16
+            };
+            let max_kb_per_batch: f64 = 20_480.0; // 20 MB
+
+            let mut batches: Vec<Vec<(usize, web_sys::File, f64)>> = Vec::new();
+            let mut cur_batch: Vec<(usize, web_sys::File, f64)> = Vec::new();
+            let mut cur_batch_kb: f64 = 0.0;
+
             for (idx, file) in file_vec.into_iter().enumerate() {
+                let this_kb = file_kbs.get(idx).copied().unwrap_or(10.0);
+                if !cur_batch.is_empty()
+                    && (cur_batch.len() >= max_files_per_batch
+                        || (cur_batch_kb + this_kb) > max_kb_per_batch)
+                {
+                    batches.push(cur_batch);
+                    cur_batch = Vec::new();
+                    cur_batch_kb = 0.0;
+                }
+                cur_batch_kb += this_kb;
+                cur_batch.push((idx, file, this_kb));
+            }
+            if !cur_batch.is_empty() {
+                batches.push(cur_batch);
+            }
+
+            let total_batches = batches.len().max(1);
+
+            for (batch_idx, batch) in batches.into_iter().enumerate() {
                 if upload_cancelled.get_untracked() {
                     break;
                 }
-                let this_kb = file_kbs.get(idx).copied().unwrap_or(10.0);
+                let first_file_idx = batch.first().map(|(i, _, _)| *i + 1).unwrap_or(1);
+                let last_file_idx = batch.last().map(|(i, _, _)| *i + 1).unwrap_or(first_file_idx);
+                let batch_kb: f64 = batch.iter().map(|(_, _, kb)| *kb).sum();
+                let batch_file_count = batch.len();
+
                 let remaining_kb = (total_kb - completed_kb).max(0.0);
                 let est_rem_sec = ((remaining_kb * ms_per_kb) / 1000.0).round() as u64;
                 let elapsed_sec = ((js_sys::Date::now() - upload_start_ms) / 1000.0).max(0.0) as u64;
@@ -1588,9 +1936,12 @@ fn App() -> impl IntoView {
                 set_upload_progress_pct.set(pct);
                 set_upload_eta_text.set(if is_en_val {
                     format!(
-                        "File {}/{} ({:.0}/{:.0} KB · {:.0}%) · Elapsed: {:02}:{:02} · Est. remaining: ~{:02}:{:02}",
-                        idx + 1,
+                        "Files {}–{}/{} (Batch {}/{} · {:.0}/{:.0} KB · {:.0}%) · Elapsed: {:02}:{:02} · Est. remaining: ~{:02}:{:02}",
+                        first_file_idx,
+                        last_file_idx,
                         total_files,
+                        batch_idx + 1,
+                        total_batches,
                         completed_kb,
                         total_kb,
                         pct,
@@ -1601,9 +1952,12 @@ fn App() -> impl IntoView {
                     )
                 } else {
                     format!(
-                        "Datei {}/{} ({:.0}/{:.0} KB · {:.0}%) · Verstrichen: {:02}:{:02} · Geschätzte Restzeit: ~{:02}:{:02} Min.",
-                        idx + 1,
+                        "Dateien {}–{}/{} (Paket {}/{} · {:.0}/{:.0} KB · {:.0}%) · Verstrichen: {:02}:{:02} · Geschätzte Restzeit: ~{:02}:{:02} Min.",
+                        first_file_idx,
+                        last_file_idx,
                         total_files,
+                        batch_idx + 1,
+                        total_batches,
                         completed_kb,
                         total_kb,
                         pct,
@@ -1613,50 +1967,9 @@ fn App() -> impl IntoView {
                         est_rem_sec % 60
                     )
                 });
-                let file_start_ms = js_sys::Date::now();
-                let filename = file.name();
-                let rel_path = get_file_relative_path(&file);
-                let auto_folder = extract_category_from_path(&rel_path);
-                let effective_category = match (category_val.trim(), auto_folder) {
-                    (cat, Some(folder)) if !cat.is_empty() => format!("{} / {}", cat, folder),
-                    ("", Some(folder)) => folder,
-                    (cat, None) if !cat.is_empty() => cat.to_string(),
-                    _ => String::new(),
-                };
 
-                let step_desc = if is_en_val {
-                    if extract_graph_val {
-                        "Extracting text (incl. OCR), embeddings & 🕸️ Knowledge Graph relations..."
-                    } else {
-                        "Checking content hash, extracting text (incl. OCR) & computing embeddings..."
-                    }
-                } else {
-                    if extract_graph_val {
-                        "Extrahiere Text (inkl. OCR), Embeddings & 🕸️ Wissensgraph-Beziehungen..."
-                    } else {
-                        "Prüfe Inhalts-Hash, extrahiere Text (inkl. OCR) & berechne Embeddings..."
-                    }
-                };
-                let cat_prefix = if !effective_category.is_empty() {
-                    format!("[{}] ", effective_category)
-                } else {
-                    String::new()
-                };
-                let file_prefix = if is_en_val { "File" } else { "Datei" };
-                set_ingest_status.set(format!(
-                    "⏳ {} {}/{} ('{}{}'): {}",
-                    file_prefix,
-                    idx + 1,
-                    total_files,
-                    cat_prefix,
-                    filename,
-                    step_desc
-                ));
-
+                let batch_start_ms = js_sys::Date::now();
                 let form_data = FormData::new().unwrap();
-                if !effective_category.is_empty() {
-                    let _ = form_data.append_with_str("category", &effective_category);
-                }
                 let _ = form_data.append_with_str("pipeline", &pipeline_val);
                 let _ = form_data.append_with_str(
                     "replace_revision",
@@ -1666,7 +1979,52 @@ fn App() -> impl IntoView {
                     "extract_graph",
                     if extract_graph_val { "true" } else { "false" },
                 );
-                let _ = form_data.append_with_blob_and_filename("files", &file, &filename);
+
+                let mut preview_names: Vec<String> = Vec::with_capacity(batch_file_count);
+                for (_, file, _) in &batch {
+                    let filename = file.name();
+                    let rel_path = get_file_relative_path(file);
+                    let auto_folder = extract_category_from_path(&rel_path);
+                    let effective_category = match (category_val.trim(), auto_folder) {
+                        (cat, Some(folder)) if !cat.is_empty() => format!("{} / {}", cat, folder),
+                        ("", Some(folder)) => folder,
+                        (cat, None) if !cat.is_empty() => cat.to_string(),
+                        _ => String::new(),
+                    };
+                    let upload_filename = if !effective_category.is_empty()
+                        && !filename.trim_start().starts_with('[')
+                    {
+                        format!("[{}] {}", effective_category, filename)
+                    } else {
+                        filename.clone()
+                    };
+                    if preview_names.len() < 3 {
+                        preview_names.push(upload_filename.clone());
+                    }
+                    let _ =
+                        form_data.append_with_blob_and_filename("files", file, &upload_filename);
+                }
+
+                let preview_label = if batch_file_count > 3 {
+                    format!("{} (+{} weitere)", preview_names.join(", "), batch_file_count - 3)
+                } else {
+                    preview_names.join(", ")
+                };
+
+                let step_desc = if is_en_val {
+                    "Parallel PDF/OCR text extraction & batched GPU embedding..."
+                } else {
+                    "Parallele PDF/OCR-Textextraktion & gebündeltes GPU-Batch-Embedding..."
+                };
+                set_ingest_status.set(format!(
+                    "⏳ {} {}–{}/{} ({}): {}",
+                    if is_en_val { "Files" } else { "Dateien" },
+                    first_file_idx,
+                    last_file_idx,
+                    total_files,
+                    preview_label,
+                    step_desc
+                ));
 
                 let ctrl = JsAbortController::new();
                 let signal = ctrl.signal();
@@ -1683,39 +2041,57 @@ fn App() -> impl IntoView {
                         let data: serde_json::Value = resp.json().await.unwrap_or_default();
                         let skipped = data["skipped_duplicates"].as_u64().unwrap_or(0) as usize;
                         let replaced = data["replaced_revisions"].as_u64().unwrap_or(0) as usize;
+                        let files_proc = data["files_processed"]
+                            .as_u64()
+                            .unwrap_or(batch_file_count as u64)
+                            as usize;
                         let chunks = data["chunks_indexed"].as_u64().unwrap_or(0);
                         let g_ent = data["graph_entities_extracted"].as_u64().unwrap_or(0);
                         let g_rel = data["graph_relations_extracted"].as_u64().unwrap_or(0);
                         total_entities += g_ent;
                         total_relations += g_rel;
                         replaced_files += replaced;
-                        if skipped > 0 {
-                            skipped_files += skipped;
-                        } else {
-                            total_chunks += chunks;
-                            success_files += 1;
-                            let file_took_ms = (js_sys::Date::now() - file_start_ms).max(50.0);
-                            measured_embed_kb += this_kb;
-                            measured_embed_ms += file_took_ms;
-                            if measured_embed_kb >= 5.0 {
-                                ms_per_kb = (measured_embed_ms / measured_embed_kb).clamp(20.0, 2000.0);
+                        skipped_files += skipped;
+
+                        let newly_indexed = files_proc.saturating_sub(skipped);
+                        total_chunks += chunks;
+                        success_files += newly_indexed;
+
+                        if let Some(errs) = data["errors"].as_array() {
+                            for err_val in errs {
+                                if let Some(s) = err_val.as_str() {
+                                    if !s.is_empty() {
+                                        error_messages.push(s.to_string());
+                                    }
+                                }
                             }
                         }
-                        completed_kb += this_kb;
+
+                        if newly_indexed > 0 {
+                            let batch_took_ms = (js_sys::Date::now() - batch_start_ms).max(50.0);
+                            measured_embed_kb += batch_kb;
+                            measured_embed_ms += batch_took_ms;
+                            if measured_embed_kb >= 5.0 {
+                                ms_per_kb = (measured_embed_ms / measured_embed_kb).clamp(5.0, 2000.0);
+                            }
+                        }
+                        completed_kb += batch_kb;
                     }
                     Ok(resp) => {
                         if upload_cancelled.get_untracked() {
                             break;
                         }
                         let err = resp.text().await.unwrap_or_default();
-                        error_messages.push(format!("{}: {}", filename, err));
+                        error_messages.push(format!("Batch {}: {}", batch_idx + 1, err));
+                        completed_kb += batch_kb;
                     }
                     Err(e) => {
                         if upload_cancelled.get_untracked() {
                             break;
                         }
                         let net_lbl = if is_en_val { "Network" } else { "Netzwerk" };
-                        error_messages.push(format!("{} ({}: {})", filename, net_lbl, e));
+                        error_messages.push(format!("Batch {} ({}: {})", batch_idx + 1, net_lbl, e));
+                        completed_kb += batch_kb;
                     }
                 }
             }
@@ -2409,11 +2785,13 @@ fn App() -> impl IntoView {
         persist_current_chat(None);
         let new_id = next_session_id.get();
         set_next_session_id.set(new_id + 1);
+        let cur_db = active_project_db.get_untracked();
 
         let new_session = ChatSession {
             id: new_id,
             title: "Neuer Chat".to_string(),
             messages: vec![default_welcome_stored()],
+            project_db: Some(cur_db.clone()),
         };
         let ui_msgs = stored_to_ui_messages(&new_session.messages, next_msg_id);
 
@@ -2426,6 +2804,9 @@ fn App() -> impl IntoView {
         set_chat_attachments.set(Vec::new());
         set_history_cursor.set(None);
         set_attachment_error.set(None);
+        last_session_per_db.update(|m| {
+            m.insert(cur_db, new_id);
+        });
     };
 
     // --- Handler: Zu einem bestehenden Chat wechseln ---
@@ -2437,11 +2818,22 @@ fn App() -> impl IntoView {
         let sessions = chat_sessions.get();
         if let Some(target_sess) = sessions.iter().find(|s| s.id == target_id) {
             let ui_msgs = stored_to_ui_messages(&target_sess.messages, next_msg_id);
+            let linked_db = target_sess
+                .project_db
+                .clone()
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| "knowledge_base".to_string());
             set_active_session_id.set(target_id);
             set_messages.set(ui_msgs);
             set_chat_attachments.set(Vec::new());
             set_history_cursor.set(None);
             set_attachment_error.set(None);
+            last_session_per_db.update(|m| {
+                m.insert(linked_db.clone(), target_id);
+            });
+            if linked_db != active_project_db.get_untracked() {
+                switch_or_create_project_db(linked_db);
+            }
         }
     };
 
@@ -2451,28 +2843,45 @@ fn App() -> impl IntoView {
             return;
         }
         persist_current_chat(None);
+        let cur_db = active_project_db.get_untracked();
         let mut sessions = chat_sessions.get();
         sessions.retain(|s| s.id != delete_id);
 
-        if sessions.is_empty() {
+        if !sessions.iter().any(|s| session_belongs_to_project(s, &cur_db)) {
             let fresh_id = next_session_id.get();
             set_next_session_id.set(fresh_id + 1);
-            sessions.push(ChatSession {
-                id: fresh_id,
-                title: "Neuer Chat".to_string(),
-                messages: vec![default_welcome_stored()],
-            });
+            sessions.insert(
+                0,
+                ChatSession {
+                    id: fresh_id,
+                    title: "Neuer Chat".to_string(),
+                    messages: vec![default_welcome_stored()],
+                    project_db: Some(cur_db.clone()),
+                },
+            );
         }
 
         let current_active = active_session_id.get();
-        if current_active == delete_id || !sessions.iter().any(|s| s.id == current_active) {
-            let next_active = sessions.first().unwrap().clone();
-            let ui_msgs = stored_to_ui_messages(&next_active.messages, next_msg_id);
-            set_active_session_id.set(next_active.id);
-            set_messages.set(ui_msgs);
-            set_chat_attachments.set(Vec::new());
-            set_history_cursor.set(None);
-            set_attachment_error.set(None);
+        if current_active == delete_id
+            || !sessions
+                .iter()
+                .any(|s| s.id == current_active && session_belongs_to_project(s, &cur_db))
+        {
+            if let Some(next_active) = sessions
+                .iter()
+                .find(|s| session_belongs_to_project(s, &cur_db))
+                .cloned()
+            {
+                let ui_msgs = stored_to_ui_messages(&next_active.messages, next_msg_id);
+                set_active_session_id.set(next_active.id);
+                set_messages.set(ui_msgs);
+                set_chat_attachments.set(Vec::new());
+                set_history_cursor.set(None);
+                set_attachment_error.set(None);
+                last_session_per_db.update(|m| {
+                    m.insert(cur_db, next_active.id);
+                });
+            }
         }
 
         save_sessions_to_storage(&sessions);
@@ -2531,6 +2940,114 @@ fn App() -> impl IntoView {
                         <span style="color: #818cf8; margin-top: 4px;">{move || backend_info.get()}</span>
                     </div>
 
+                    // --- Multi-Projekt / SurrealDB Datenbank-Umschalter direkt in der Sidebar ---
+                    <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid #334155; border-radius: 0.55rem; padding: 0.55rem 0.65rem; display: flex; flex-direction: column; gap: 0.4rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #a5b4fc;">
+                                {move || if is_en() { "🗄️ Project DB (SurrealDB)" } else { "🗄️ Projekt-DB (SurrealDB)" }}
+                            </span>
+                            <div style="display:flex; gap:0.25rem;">
+                                <button
+                                    type="button"
+                                    style="background: rgba(99, 102, 241, 0.2); border: 1px solid rgba(99, 102, 241, 0.45); color: #e0e7ff; font-size: 0.7rem; padding: 0.12rem 0.42rem; border-radius: 0.3rem; cursor: pointer;"
+                                    title=move || if is_en() { "Create new project database" } else { "Neue Projekt-Datenbank anlegen" }
+                                    on:click=move |_| set_show_sidebar_new_db.update(|v| *v = !*v)
+                                >
+                                    "+ DB"
+                                </button>
+                                <button
+                                    type="button"
+                                    style="background: transparent; border: 1px solid #334155; color: #94a3b8; font-size: 0.7rem; padding: 0.12rem 0.38rem; border-radius: 0.3rem; cursor: pointer;"
+                                    title=move || if is_en() { "Manage project databases & backups" } else { "Projekt-Datenbanken & Backups verwalten" }
+                                    on:click=move |_| {
+                                        set_db_backup_status.set(String::new());
+                                        refresh_project_databases();
+                                        refresh_documents();
+                                        set_settings_tab.set("backup".to_string());
+                                        set_show_llm_modal.set(true);
+                                    }
+                                >
+                                    "⚙️"
+                                </button>
+                            </div>
+                        </div>
+
+                        <select
+                            style="padding: 0.38rem 0.55rem; font-size: 0.79rem; font-weight: 600; background: #0b0f19; border-color: #475569; color: #f8fafc;"
+                            disabled=move || is_loading.get()
+                            prop:value=move || active_project_db.get()
+                            on:change=move |ev| {
+                                let chosen = event_target_value(&ev);
+                                if !chosen.is_empty() && chosen != active_project_db.get_untracked() {
+                                    switch_or_create_project_db(chosen);
+                                }
+                            }
+                        >
+                            <For
+                                each=move || {
+                                    let list = project_databases.get();
+                                    if list.is_empty() {
+                                        vec![ProjectDatabaseItem {
+                                            db_name: active_project_db.get(),
+                                            is_active: true,
+                                            is_default: true,
+                                            document_count: stored_docs.get().len(),
+                                            chunk_count: stored_docs.get().iter().map(|d| d.chunk_count).sum(),
+                                        }]
+                                    } else {
+                                        list
+                                    }
+                                }
+                                key=|db| format!("{}_{}_{}", db.db_name, db.document_count, db.chunk_count)
+                                children=move |db| {
+                                    let val = db.db_name.clone();
+                                    let label = format!("{} ({} Dok.)", db.db_name, db.document_count);
+                                    let is_act = db.db_name == active_project_db.get_untracked();
+                                    view! {
+                                        <option value=val selected=is_act>{label}</option>
+                                    }
+                                }
+                            />
+                        </select>
+
+                        {move || show_sidebar_new_db.get().then(|| view! {
+                            <div style="display:flex; gap:0.3rem; margin-top:0.15rem;">
+                                <input
+                                    type="text"
+                                    style="padding: 0.3rem 0.5rem; font-size: 0.76rem;"
+                                    placeholder=move || if is_en() { "e.g. jabber_code..." } else { "z.B. jabber_code..." }
+                                    prop:value=move || new_project_db_input.get()
+                                    on:input=move |ev| set_new_project_db_input.set(event_target_value(&ev))
+                                    on:keydown=move |ev| {
+                                        if ev.key() == "Enter" {
+                                            let name = new_project_db_input.get_untracked();
+                                            if !name.trim().is_empty() {
+                                                switch_or_create_project_db(name);
+                                                set_new_project_db_input.set(String::new());
+                                                set_show_sidebar_new_db.set(false);
+                                            }
+                                        }
+                                    }
+                                />
+                                <button
+                                    type="button"
+                                    class="btn"
+                                    style="padding: 0.3rem 0.55rem; font-size: 0.75rem;"
+                                    on:click=move |_| {
+                                        let name = new_project_db_input.get_untracked();
+                                        if !name.trim().is_empty() {
+                                            switch_or_create_project_db(name);
+                                            set_new_project_db_input.set(String::new());
+                                            set_show_sidebar_new_db.set(false);
+                                        }
+                                    }
+                                >
+                                    "✓"
+                                </button>
+                            </div>
+                        })}
+                    </div>
+
                     <nav class="nav-menu">
                         <button
                             class="nav-btn nav-btn-primary"
@@ -2541,14 +3058,22 @@ fn App() -> impl IntoView {
                         </button>
                     </nav>
 
-                    // --- Multi-Chat Sitzungs-Panel ---
+                    // --- Multi-Chat Sitzungs-Panel (gefiltert nach aktiver Projekt-DB) ---
                     <div class="chat-sessions-section">
                         <div class="chat-sessions-header">
                             <span>
-                                {move || if is_en() {
-                                    format!("Your Chats ({})", chat_sessions.get().len())
-                                } else {
-                                    format!("Deine Chats ({})", chat_sessions.get().len())
+                                {move || {
+                                    let cur_db = active_project_db.get();
+                                    let count = chat_sessions
+                                        .get()
+                                        .iter()
+                                        .filter(|s| session_belongs_to_project(s, &cur_db))
+                                        .count();
+                                    if is_en() {
+                                        format!("Project Chats ({})", count)
+                                    } else {
+                                        format!("Projekt-Chats ({})", count)
+                                    }
                                 }}
                             </span>
                             <button
@@ -2591,8 +3116,23 @@ fn App() -> impl IntoView {
 
                         <div class="chat-sessions-list">
                             <For
-                                each=move || chat_sessions.get()
-                                key=|sess| format!("{}_{}_{}", sess.id, sess.title, sess.messages.len())
+                                each=move || {
+                                    let cur_db = active_project_db.get();
+                                    chat_sessions
+                                        .get()
+                                        .into_iter()
+                                        .filter(|s| session_belongs_to_project(s, &cur_db))
+                                        .collect::<Vec<_>>()
+                                }
+                                key=|sess| {
+                                    format!(
+                                        "{}_{}_{}_{}",
+                                        sess.id,
+                                        sess.title,
+                                        sess.messages.len(),
+                                        sess.project_db.as_deref().unwrap_or("knowledge_base")
+                                    )
+                                }
                                 children=move |sess| {
                                     let sid = sess.id;
                                     let title = sess.title.clone();
@@ -3125,7 +3665,8 @@ fn App() -> impl IntoView {
                                                             && !src.doc_id.starts_with("webstore_")
                                                             && !src.doc_id.starts_with("internal_")
                                                             && !src.doc_id.starts_with("external_")
-                                                            && !src.doc_id.starts_with("ephemeral_");
+                                                            && !src.doc_id.starts_with("ephemeral_")
+                                                            && !src.doc_id.starts_with("surrealdb_");
                                                         let src_html = render_markdown_to_html(&src.content);
                                                         view! {
                                                             <details class="source-item">
@@ -5087,6 +5628,7 @@ fn App() -> impl IntoView {
                                         class=move || if settings_tab.get() == "backup" { "settings-nav-btn active" } else { "settings-nav-btn" }
                                         on:click=move |_| {
                                             set_db_backup_status.set(String::new());
+                                            refresh_project_databases();
                                             refresh_documents();
                                             set_settings_tab.set("backup".to_string());
                                         }
@@ -5094,18 +5636,10 @@ fn App() -> impl IntoView {
                                         <span class="settings-nav-icon">"💾"</span>
                                         <div class="settings-nav-text">
                                             <span class="settings-nav-title">
-                                                {move || if is_en() { "SurrealDB Backup" } else { "SurrealDB Backup" }}
+                                                {move || if is_en() { "Projects & DB Backup" } else { "Projekte & DB-Backup" }}
                                             </span>
                                             <span class="settings-nav-sub">
-                                                {move || {
-                                                    let docs = stored_docs.get();
-                                                    let chunks: usize = docs.iter().map(|d| d.chunk_count).sum();
-                                                    if is_en() {
-                                                        format!("Export / Import ({} docs · {} chunks)", docs.len(), chunks)
-                                                    } else {
-                                                        format!("Export / Import ({} Dok. · {} Chunks)", docs.len(), chunks)
-                                                    }
-                                                }}
+                                                {move || format!("DB: {} ({} Dok.)", active_project_db.get(), stored_docs.get().len())}
                                             </span>
                                         </div>
                                     </button>
@@ -6222,6 +6756,10 @@ fn App() -> impl IntoView {
                                 let api_k = rp_api_key_input.get();
                                 let ssh_k = rp_ssh_key_input.get();
                                 let ssh_p = rp_ssh_pass_input.get();
+                                save_rp_creds_to_storage(
+                                    if api_k.trim().is_empty() { None } else { Some(api_k.as_str()) },
+                                    if ssh_p.is_empty() { None } else { Some(ssh_p.as_str()) },
+                                );
                                 let gpu = rp_gpu_type.get();
                                 let en_llm = rp_enable_llm.get();
                                 let mod_name = rp_llm_model.get();
@@ -6256,6 +6794,10 @@ fn App() -> impl IntoView {
                                 let api_k = rp_api_key_input.get();
                                 let ssh_k = rp_ssh_key_input.get();
                                 let ssh_p = rp_ssh_pass_input.get();
+                                save_rp_creds_to_storage(
+                                    if api_k.trim().is_empty() { None } else { Some(api_k.as_str()) },
+                                    if ssh_p.is_empty() { None } else { Some(ssh_p.as_str()) },
+                                );
                                 let gpu = rp_gpu_type.get();
                                 let en_llm = rp_enable_llm.get();
                                 let mod_name = rp_llm_model.get();
@@ -6420,35 +6962,211 @@ fn App() -> impl IntoView {
                                             }}
                                         </div>
 
-                                        // GPU Typ
-                                        <div>
-                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.4rem;">
-                                                {move || if is_en() {
-                                                    "🖥️ RunPod GPU Model (48 GB VRAM recommended for 14B–32B models + 32k context):"
-                                                } else {
-                                                    "🖥️ RunPod GPU-Typ (48 GB VRAM ideal für qwen3:8b bis qwen3:32b + BGE-M3 parallel):"
-                                                }}
-                                            </label>
-                                            <div style="display:flex; flex-wrap:wrap; gap:0.45rem;">
+                                        // GPU Typ (Live-Katalog direkt aus der RunPod GraphQL API)
+                                        <div style="display:flex; flex-direction:column; gap:0.55rem;">
+                                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                                                <label style="font-size:0.78rem; color:#94a3b8; margin:0;">
+                                                    {move || if is_en() {
+                                                        "🖥️ RunPod GPU Model (Live Prices & Stock from RunPod API):"
+                                                    } else {
+                                                        "🖥️ RunPod GPU-Typ (Live-Preise & Verfügbarkeit direkt von RunPod):"
+                                                    }}
+                                                </label>
+                                                <div style="display:flex; align-items:center; gap:0.7rem; flex-wrap:wrap;">
+                                                    <label style="display:inline-flex; align-items:center; gap:0.35rem; font-size:0.74rem; color:#cbd5e1; cursor:pointer; margin:0;">
+                                                        <input
+                                                            type="checkbox"
+                                                            prop:checked=move || rp_only_available_gpus.get()
+                                                            on:change=move |ev| {
+                                                                let checked = ev.target().unwrap().unchecked_into::<HtmlInputElement>().checked();
+                                                                set_rp_only_available_gpus.set(checked);
+                                                            }
+                                                        />
+                                                        <span>
+                                                            {move || if is_en() { "Only show currently available GPUs (🟢)" } else { "Nur aktuell freie GPUs (🟢)" }}
+                                                        </span>
+                                                    </label>
+                                                    <button
+                                                        type="button"
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.2rem 0.55rem; font-size:0.72rem;"
+                                                        disabled=move || rp_loading_gpus.get()
+                                                        on:click=move |_| refresh_runpod_gpus()
+                                                    >
+                                                        {move || if rp_loading_gpus.get() {
+                                                            if is_en() { "⏳ Loading..." } else { "⏳ Lade..." }
+                                                        } else if is_en() {
+                                                            "🔄 Refresh Live Prices"
+                                                        } else {
+                                                            "🔄 Live-Preise aktualisieren"
+                                                        }}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            // Vollständiges Dropdown aller RunPod GPUs
+                                            <select
+                                                style="padding: 0.5rem 0.7rem; font-size: 0.82rem; font-weight: 600; background: #0b0f19; border-color: #4f46e5; color: #f8fafc;"
+                                                prop:value=move || rp_gpu_type.get()
+                                                on:change=move |ev| {
+                                                    let val = event_target_value(&ev);
+                                                    if !val.is_empty() {
+                                                        set_rp_gpu_type.set(val);
+                                                    }
+                                                }
+                                            >
+                                                <For
+                                                    each=move || {
+                                                        let catalog = rp_gpu_catalog.get();
+                                                        let only_avail = rp_only_available_gpus.get();
+                                                        let cur_selected = rp_gpu_type.get();
+                                                        if catalog.is_empty() {
+                                                            vec![
+                                                                RunpodGpuTypeItem {
+                                                                    id: "NVIDIA A40".to_string(),
+                                                                    display_name: "A40".to_string(),
+                                                                    memory_gb: 48,
+                                                                    secure_cloud: true,
+                                                                    community_cloud: false,
+                                                                    secure_price: Some(0.59),
+                                                                    community_price: None,
+                                                                    lowest_price: Some(0.59),
+                                                                    secure_stock: Some("Low".to_string()),
+                                                                    community_stock: None,
+                                                                    available: true,
+                                                                },
+                                                                RunpodGpuTypeItem {
+                                                                    id: "NVIDIA RTX A6000".to_string(),
+                                                                    display_name: "RTX A6000".to_string(),
+                                                                    memory_gb: 48,
+                                                                    secure_cloud: true,
+                                                                    community_cloud: true,
+                                                                    secure_price: Some(0.69),
+                                                                    community_price: Some(0.33),
+                                                                    lowest_price: Some(0.33),
+                                                                    secure_stock: Some("Low".to_string()),
+                                                                    community_stock: None,
+                                                                    available: true,
+                                                                },
+                                                                RunpodGpuTypeItem {
+                                                                    id: "NVIDIA GeForce RTX 4090".to_string(),
+                                                                    display_name: "RTX 4090".to_string(),
+                                                                    memory_gb: 24,
+                                                                    secure_cloud: true,
+                                                                    community_cloud: true,
+                                                                    secure_price: Some(0.89),
+                                                                    community_price: Some(0.34),
+                                                                    lowest_price: Some(0.34),
+                                                                    secure_stock: Some("Low".to_string()),
+                                                                    community_stock: Some("Low".to_string()),
+                                                                    available: true,
+                                                                },
+                                                                RunpodGpuTypeItem {
+                                                                    id: "NVIDIA L40S".to_string(),
+                                                                    display_name: "L40S".to_string(),
+                                                                    memory_gb: 48,
+                                                                    secure_cloud: true,
+                                                                    community_cloud: true,
+                                                                    secure_price: Some(1.09),
+                                                                    community_price: Some(0.79),
+                                                                    lowest_price: Some(0.79),
+                                                                    secure_stock: None,
+                                                                    community_stock: None,
+                                                                    available: false,
+                                                                },
+                                                            ]
+                                                        } else {
+                                                            catalog
+                                                                .into_iter()
+                                                                .filter(|g| !only_avail || g.available || g.id == cur_selected)
+                                                                .collect()
+                                                        }
+                                                    }
+                                                    key=|g| {
+                                                        format!(
+                                                            "{}_{}_{:?}_{:?}",
+                                                            g.id, g.available, g.secure_price, g.community_price
+                                                        )
+                                                    }
+                                                    children=move |g| {
+                                                        let val = g.id.clone();
+                                                        let is_sel = g.id == rp_gpu_type.get_untracked();
+                                                        let dot = if g.available { "🟢" } else { "⚪" };
+                                                        let mut price_parts = Vec::new();
+                                                        if let Some(cp) = g.community_price {
+                                                            let st = g
+                                                                .community_stock
+                                                                .as_deref()
+                                                                .map(|s| format!(" [{}]", s))
+                                                                .unwrap_or_default();
+                                                            price_parts.push(format!("Community: ${:.2}/h{}", cp, st));
+                                                        }
+                                                        if let Some(sp) = g.secure_price {
+                                                            let st = g
+                                                                .secure_stock
+                                                                .as_deref()
+                                                                .map(|s| format!(" [{}]", s))
+                                                                .unwrap_or_default();
+                                                            price_parts.push(format!("Secure: ${:.2}/h{}", sp, st));
+                                                        }
+                                                        let price_str = if price_parts.is_empty() {
+                                                            "—".to_string()
+                                                        } else {
+                                                            price_parts.join(" · ")
+                                                        };
+                                                        let avail_tag = if !g.available {
+                                                            if is_en() { " (currently out of stock)" } else { " (aktuell belegt)" }
+                                                        } else {
+                                                            ""
+                                                        };
+                                                        let label = format!(
+                                                            "{} {} GB VRAM — {} ({}) — {}{}",
+                                                            dot, g.memory_gb, g.display_name, g.id, price_str, avail_tag
+                                                        );
+                                                        view! {
+                                                            <option value=val selected=is_sel>{label}</option>
+                                                        }
+                                                    }
+                                                />
+                                            </select>
+
+                                            // Schnellauswahl-Buttons für beliebte RAG-GPUs (mit Live-Preisen aus dem Katalog)
+                                            <div style="display:flex; flex-wrap:wrap; gap:0.4rem;">
                                                 {[
-                                                    ("NVIDIA A40", "NVIDIA A40 (48 GB VRAM · ~$0.59/h)"),
-                                                    ("NVIDIA GeForce RTX 4090", "RTX 4090 (24 GB VRAM · ~$0.69/h)"),
-                                                    ("NVIDIA RTX A6000", "RTX A6000 (48 GB VRAM · ~$0.79/h)"),
-                                                    ("NVIDIA L40S", "NVIDIA L40S (48 GB VRAM)"),
-                                                ].into_iter().map(|(gpu_id, gpu_label)| {
-                                                    let gid_check = gpu_id.to_string();
-                                                    let gid_click = gpu_id.to_string();
+                                                    "NVIDIA A40",
+                                                    "NVIDIA RTX A6000",
+                                                    "NVIDIA GeForce RTX 4090",
+                                                    "NVIDIA GeForce RTX 3090",
+                                                    "NVIDIA L40S",
+                                                    "NVIDIA A100 80GB PCIe",
+                                                ].into_iter().map(|preset_id| {
+                                                    let pid_check = preset_id.to_string();
+                                                    let pid_click = preset_id.to_string();
+                                                    let pid_lookup = preset_id.to_string();
                                                     view! {
                                                         <button
                                                             type="button"
-                                                            style=move || if rp_gpu_type.get() == gid_check {
-                                                                "flex:1; min-width:170px; padding:0.45rem 0.65rem; font-size:0.78rem; font-weight:700; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer;"
+                                                            style=move || if rp_gpu_type.get() == pid_check {
+                                                                "padding:0.35rem 0.65rem; font-size:0.75rem; font-weight:700; border-radius:0.4rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer;"
                                                             } else {
-                                                                "flex:1; min-width:170px; padding:0.45rem 0.65rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
+                                                                "padding:0.35rem 0.65rem; font-size:0.75rem; font-weight:500; border-radius:0.4rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
                                                             }
-                                                            on:click=move |_| set_rp_gpu_type.set(gid_click.clone())
+                                                            on:click=move |_| set_rp_gpu_type.set(pid_click.clone())
                                                         >
-                                                            {gpu_label}
+                                                            {move || {
+                                                                if let Some(found) = rp_gpu_catalog.get().into_iter().find(|x| x.id == pid_lookup) {
+                                                                    let dot = if found.available { "🟢" } else { "⚪" };
+                                                                    let p_txt = match (found.community_price, found.secure_price) {
+                                                                        (Some(cp), Some(sp)) => format!("${:.2}–${:.2}/h", cp.min(sp), cp.max(sp)),
+                                                                        (Some(cp), None) => format!("${:.2}/h", cp),
+                                                                        (None, Some(sp)) => format!("${:.2}/h", sp),
+                                                                        (None, None) => String::new(),
+                                                                    };
+                                                                    format!("{} {} ({} GB · {})", dot, found.display_name, found.memory_gb, p_txt)
+                                                                } else {
+                                                                    pid_lookup.clone()
+                                                                }
+                                                            }}
                                                         </button>
                                                     }
                                                 }).collect_view()}
@@ -6796,6 +7514,7 @@ fn App() -> impl IntoView {
                                                 });
                                                 set_db_import_file.set(None);
                                                 set_db_import_file_label.set(String::new());
+                                                refresh_project_databases();
                                                 refresh_documents();
                                                 refresh_crm_employees();
                                                 refresh_fleet_data();
@@ -6814,6 +7533,42 @@ fn App() -> impl IntoView {
                                 });
                             };
 
+                            let delete_proj_db = move |target_db: String| {
+                                spawn_local(async move {
+                                    let url = format!("/v1/db/projects/{}", target_db);
+                                    if let Ok(resp) = Request::delete(&url).send().await {
+                                        if resp.ok() {
+                                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                                // Chats der gelöschten Projekt-Datenbank ebenfalls entfernen
+                                                set_chat_sessions.update(|sessions| {
+                                                    sessions.retain(|s| !session_belongs_to_project(s, &target_db));
+                                                    save_sessions_to_storage(sessions);
+                                                });
+                                                if let Some(act) = json["active_db"].as_str() {
+                                                    let act_str = act.to_string();
+                                                    set_active_project_db.set(act_str.clone());
+                                                    activate_chat_for_project(act_str);
+                                                }
+                                                let list: Vec<ProjectDatabaseItem> =
+                                                    serde_json::from_value(json["databases"].clone()).unwrap_or_default();
+                                                set_project_databases.set(list);
+                                                set_db_backup_status.set(format!(
+                                                    "🗑️ Projekt-Datenbank '{}' und zugehörige Projekt-Chats wurden gelöscht.",
+                                                    target_db
+                                                ));
+                                                refresh_documents();
+                                                refresh_crm_employees();
+                                                refresh_fleet_data();
+                                                refresh_webstore_data();
+                                            }
+                                        } else if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                            let err = json["error"].as_str().unwrap_or("Fehler beim Löschen");
+                                            set_db_backup_status.set(format!("⚠️ {}", err));
+                                        }
+                                    }
+                                });
+                            };
+
                             view! {
                                 <div style="display:flex; flex-direction:column; gap:1.1rem;">
                                     // --- Aktueller DB-Bestand ---
@@ -6821,20 +7576,23 @@ fn App() -> impl IntoView {
                                         <div>
                                             <div style="font-size: 0.84rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
                                                 {move || if is_en() {
-                                                    "💾 SurrealDB 4.0 Knowledge Base Backup & Restore"
+                                                    "🗄️ SurrealDB 4.0 Multi-Project Workspaces & Backup"
                                                 } else {
-                                                    "💾 SurrealDB 4.0 Wissensdatenbank Backup & Wiederherstellung"
+                                                    "🗄️ SurrealDB 4.0 Multi-Projekt Datenbanken & Backup"
                                                 }}
                                             </div>
                                             <div style="font-size: 0.76rem; color: #94a3b8; margin-top: 0.2rem;">
                                                 {move || if is_en() {
-                                                    "Includes all documents, chunks, 1024-d BGE-M3 embeddings (no re-embedding needed on import!) and Knowledge Graph edges."
+                                                    "Maintain separate isolated databases per project (each with its own HNSW vector index, BM25 & Knowledge Graph) and switch in 0 ms."
                                                 } else {
-                                                    "Sichert alle Dokumente, Chunks, 1024-d BGE-M3 Vektoren (kein erneutes Embedding beim Import nötig!) und den Wissensgraphen."
+                                                    "Nutze getrennte Datenbanken pro Projekt (jeweils mit eigenem HNSW-Vektorindex, BM25 & Wissensgraph) und wechsle ohne Wartezeit."
                                                 }}
                                             </div>
                                         </div>
                                         <div style="display:flex; gap:0.5rem; align-items:center;">
+                                            <span class="badge" style="background:rgba(16,185,129,0.18); color:#6ee7b7; border:1px solid #10b981; padding:0.3rem 0.7rem; font-size:0.78rem;">
+                                                {move || format!("🟢 DB: {}", active_project_db.get())}
+                                            </span>
                                             <span class="badge" style="background:#1e1b4b; color:#c7d2fe; border:1px solid #4f46e5; padding:0.3rem 0.7rem; font-size:0.78rem;">
                                                 {move || {
                                                     let d = stored_docs.get().len();
@@ -6849,47 +7607,186 @@ fn App() -> impl IntoView {
                                         </div>
                                     </div>
 
-                                    // --- 1. Export Card ---
+                                    // --- 0. Multi-Projekt Datenbanken verwalten ---
+                                    <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.15rem; display: flex; flex-direction: column; gap: 0.9rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+                                            <div>
+                                                <div style="font-size: 0.9rem; font-weight: 700; color: #f8fafc;">
+                                                    {move || if is_en() {
+                                                        "🗄️ 1. Project Databases (Parallel SurrealDB Workspaces)"
+                                                    } else {
+                                                        "🗄️ 1. Projekt-Datenbanken (Parallele SurrealDB-Workspaces)"
+                                                    }}
+                                                </div>
+                                                <div style="font-size: 0.77rem; color: #94a3b8; margin-top: 0.2rem;">
+                                                    {move || if is_en() {
+                                                        "Create a new project database or switch between existing databases with one click."
+                                                    } else {
+                                                        "Lege für jedes Thema/Projekt eine eigene Datenbank an (z.B. gesetze, jabber_code, vertraege) und schalte per Klick um."
+                                                    }}
+                                                </div>
+                                            </div>
+
+                                            <div style="display:flex; gap:0.45rem; align-items:center;">
+                                                <input
+                                                    type="text"
+                                                    style="width: 210px; padding: 0.45rem 0.7rem; font-size: 0.8rem;"
+                                                    placeholder=move || if is_en() { "New project DB name..." } else { "Neuer Projekt-DB Name..." }
+                                                    prop:value=move || new_project_db_input.get()
+                                                    on:input=move |ev| set_new_project_db_input.set(event_target_value(&ev))
+                                                    on:keydown=move |ev| {
+                                                        if ev.key() == "Enter" {
+                                                            let name = new_project_db_input.get_untracked();
+                                                            if !name.trim().is_empty() {
+                                                                switch_or_create_project_db(name);
+                                                                set_new_project_db_input.set(String::new());
+                                                            }
+                                                        }
+                                                    }
+                                                />
+                                                <button
+                                                    type="button"
+                                                    class="btn"
+                                                    style="padding: 0.45rem 0.85rem; font-size: 0.8rem; white-space: nowrap;"
+                                                    on:click=move |_| {
+                                                        let name = new_project_db_input.get_untracked();
+                                                        if !name.trim().is_empty() {
+                                                            switch_or_create_project_db(name);
+                                                            set_new_project_db_input.set(String::new());
+                                                        }
+                                                    }
+                                                >
+                                                    {move || if is_en() { "➕ Create & Switch" } else { "➕ Anlegen & Aktivieren" }}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:0.65rem;">
+                                            <For
+                                                each=move || project_databases.get()
+                                                key=|db| format!("{}_{}_{}_{}", db.db_name, db.is_active, db.document_count, db.chunk_count)
+                                                children=move |db| {
+                                                    let name_switch = db.db_name.clone();
+                                                    let name_del = db.db_name.clone();
+                                                    let name_check = db.db_name.clone();
+                                                    let is_def = db.is_default;
+                                                    view! {
+                                                        <div
+                                                            style=move || if active_project_db.get() == name_check {
+                                                                "background: rgba(79, 70, 229, 0.18); border: 1.5px solid #6366f1; border-radius: 0.55rem; padding: 0.75rem 0.9rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.6rem;"
+                                                            } else {
+                                                                "background: #0f172a; border: 1px solid #334155; border-radius: 0.55rem; padding: 0.75rem 0.9rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.6rem;"
+                                                            }
+                                                        >
+                                                            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.4rem;">
+                                                                <span style="font-weight:700; font-size:0.86rem; color:#f8fafc; font-family:monospace;">
+                                                                    "🗄️ " {db.db_name.clone()}
+                                                                </span>
+                                                                {if db.is_active {
+                                                                    view! {
+                                                                        <span style="font-size:0.68rem; background:rgba(16,185,129,0.2); color:#6ee7b7; border:1px solid #10b981; padding:0.1rem 0.45rem; border-radius:999px; font-weight:700;">
+                                                                            {move || if is_en() { "🟢 Active" } else { "🟢 Aktiv" }}
+                                                                        </span>
+                                                                    }.into_view()
+                                                                } else if is_def {
+                                                                    view! {
+                                                                        <span style="font-size:0.68rem; color:#94a3b8; border:1px solid #334155; padding:0.1rem 0.45rem; border-radius:999px;">
+                                                                            "Default"
+                                                                        </span>
+                                                                    }.into_view()
+                                                                } else {
+                                                                    view! { <span></span> }.into_view()
+                                                                }}
+                                                            </div>
+
+                                                            <div style="font-size:0.76rem; color:#94a3b8;">
+                                                                {format!("📄 {} Dok. · 🧩 {} Chunks", db.document_count, db.chunk_count)}
+                                                            </div>
+
+                                                            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.4rem; padding-top:0.35rem; border-top:1px solid rgba(51,65,85,0.45);">
+                                                                {if db.is_active {
+                                                                    view! {
+                                                                        <span style="font-size:0.74rem; color:#a5b4fc; font-weight:600;">
+                                                                            {move || if is_en() { "✓ Currently selected" } else { "✓ Aktuell ausgewählt" }}
+                                                                        </span>
+                                                                    }.into_view()
+                                                                } else {
+                                                                    view! {
+                                                                        <button
+                                                                            type="button"
+                                                                            class="btn btn-secondary"
+                                                                            style="padding:0.25rem 0.6rem; font-size:0.74rem; border-color:#6366f1; color:#c7d2fe;"
+                                                                            on:click=move |_| switch_or_create_project_db(name_switch.clone())
+                                                                        >
+                                                                            {move || if is_en() { "Switch to DB" } else { "DB aktivieren" }}
+                                                                        </button>
+                                                                    }.into_view()
+                                                                }}
+
+                                                                {(!is_def).then(|| view! {
+                                                                    <button
+                                                                        type="button"
+                                                                        class="btn btn-secondary"
+                                                                        style="padding:0.22rem 0.5rem; font-size:0.72rem; color:#fca5a5; border-color:#7f1d1d;"
+                                                                        title=move || if is_en() { "Delete this project database" } else { "Diese Projekt-Datenbank löschen" }
+                                                                        on:click=move |_| delete_proj_db(name_del.clone())
+                                                                    >
+                                                                        "🗑️"
+                                                                    </button>
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+
+                                    // --- 2. Export Card ---
                                     <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.15rem; display: flex; flex-direction: column; gap: 0.85rem;">
                                         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
                                             <div>
                                                 <div style="font-size: 0.9rem; font-weight: 700; color: #f8fafc;">
                                                     {move || if is_en() {
-                                                        "📥 1. Export SurrealDB Database (.surql)"
+                                                        format!("📥 2. Export Active Database '{}' (.surql)", active_project_db.get())
                                                     } else {
-                                                        "📥 1. SurrealDB Datenbank exportieren (.surql)"
+                                                        format!("📥 2. Aktive Datenbank '{}' exportieren (.surql)", active_project_db.get())
                                                     }}
                                                 </div>
                                                 <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.25rem; max-width: 560px;">
                                                     {move || if is_en() {
-                                                        "Downloads a complete SurrealQL snapshot (.surql) of your current knowledge base. API keys and credentials are automatically excluded."
+                                                        "Downloads a complete SurrealQL snapshot (.surql) of the currently selected project database. API keys and credentials are automatically excluded."
                                                     } else {
-                                                        "Lädt einen vollständigen SurrealQL-Snapshot (.surql) deiner Wissensdatenbank herunter. API-Keys und Zugangsdaten werden automatisch ausgeschlossen."
+                                                        "Lädt einen vollständigen SurrealQL-Snapshot (.surql) der aktuell ausgewählten Projekt-Datenbank herunter. API-Keys und Zugangsdaten werden automatisch ausgeschlossen."
                                                     }}
                                                 </div>
                                             </div>
                                             <a
                                                 href="/v1/db/export"
-                                                download="surrealdb_knowledge_backup.surql"
+                                                download=move || format!("surrealdb_backup_{}.surql", active_project_db.get())
                                                 class="btn"
                                                 style="text-decoration:none; display:inline-flex; align-items:center; gap:0.45rem; background:linear-gradient(135deg, #4f46e5, #0284c7); white-space:nowrap;"
                                             >
                                                 <span>"📥"</span>
                                                 <span>
-                                                    {move || if is_en() { "Download SurrealDB Backup (.surql)" } else { "SurrealDB-Backup herunterladen (.surql)" }}
+                                                    {move || if is_en() {
+                                                        format!("Export '{}' (.surql)", active_project_db.get())
+                                                    } else {
+                                                        format!("'{}' als .surql exportieren", active_project_db.get())
+                                                    }}
                                                 </span>
                                             </a>
                                         </div>
                                     </div>
 
-                                    // --- 2. Import Card ---
+                                    // --- 3. Import Card ---
                                     <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.15rem; display: flex; flex-direction: column; gap: 0.95rem;">
                                         <div>
                                             <div style="font-size: 0.9rem; font-weight: 700; color: #f8fafc;">
                                                 {move || if is_en() {
-                                                    "📤 2. Import SurrealDB Backup (.surql)"
+                                                    format!("📤 3. Import SurrealDB Backup into '{}'", active_project_db.get())
                                                 } else {
-                                                    "📤 2. SurrealDB-Backup importieren (.surql)"
+                                                    format!("📤 3. SurrealDB-Backup in '{}' importieren (.surql)", active_project_db.get())
                                                 }}
                                             </div>
                                             <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.25rem;">

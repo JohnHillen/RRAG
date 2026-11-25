@@ -3,6 +3,7 @@ pub mod text_to_sql;
 
 use crate::{
     db::RetrievedChunk,
+    ingestion::pipelines::invoice,
     llm::{ChatMessage, LlmClient},
     showcases, AppState,
 };
@@ -253,6 +254,16 @@ pub async fn execute_retrieval_pipeline(
             let insert_idx = final_chunks.len().min(2);
             final_chunks.insert(insert_idx, ext_chunk);
             reranker_used = format!("{} + 🔌 Text-to-SQL (Externe DB)", reranker_used);
+        }
+    }
+
+    // 5. Generic Financial / Document Aggregation over SurrealDB when user asks for totals, sums, or year/category expenses
+    if invoice::is_financial_aggregation_query(query) {
+        let t_agg = std::time::Instant::now();
+        if let Ok(Some(agg_chunk)) = state.db.aggregate_financial_documents(query).await {
+            db_ms += t_agg.elapsed().as_millis() as u64;
+            final_chunks.insert(0, agg_chunk);
+            reranker_used = format!("{} + 📊 SurrealDB Beleg-Aggregation", reranker_used);
         }
     }
 

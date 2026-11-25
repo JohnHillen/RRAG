@@ -1,5 +1,10 @@
 use super::search::flatten_relations;
-use crate::db::{extract_result_array, sanitize_key, DocumentSummary, SurrealClient};
+use crate::{
+    db::{extract_result_array, sanitize_key, DocumentSummary, RetrievedChunk, SurrealClient},
+    ingestion::pipelines::invoice::{
+        extract_query_years, format_financial_aggregation_markdown, FinancialDocMetadata,
+    },
+};
 use anyhow::Result;
 use serde_json::json;
 
@@ -200,12 +205,20 @@ impl SurrealClient {
             .map(|(s, r, d)| format!("{} ──[{}]──► {}", s, r, d))
             .collect();
 
+        let full_doc_text: String = chunks
+            .iter()
+            .map(|(_, c, _)| c.as_str())
+            .collect::<Vec<&str>>()
+            .join("\n");
+        let financial_meta = FinancialDocMetadata::extract(doc_id, title, &full_doc_text);
+
         let doc_json = json!({
             "title": title,
             "source": source,
             "mime_type": if raw_pdf_b64.is_some() { "application/pdf" } else { "text/plain" },
             "metadata": {
                 "relations": rel_strings,
+                "financial": financial_meta,
                 "raw_b64": raw_pdf_b64,
             }
         });
@@ -312,5 +325,108 @@ impl SurrealClient {
         }
 
         Ok(())
+    }
+
+    /// Performs a fast (<20 ms) full-collection financial & document aggregation over all documents
+    /// in the active SurrealDB database when the user asks for totals, sums, or year/category expenses.
+    pub async fn aggregate_financial_documents(
+        &self,
+        query: &str,
+    ) -> Result<Option<RetrievedChunk>> {
+        let sql = "SELECT doc_id, doc_title, chunk_index, content FROM chunk ORDER BY doc_title ASC, chunk_index ASC;";
+        let res = self.execute_sql(sql).await?;
+        let rows = extract_result_array(res.first());
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let mut docs_map: std::collections::BTreeMap<String, (String, Vec<String>)> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            let doc_id = r["doc_id"].as_str().unwrap_or_default().to_string();
+            let doc_title = r["doc_title"].as_str().unwrap_or_default().to_string();
+            let content = r["content"].as_str().unwrap_or_default().to_string();
+            if doc_id.is_empty() || doc_title.is_empty() {
+                continue;
+            }
+            let entry = docs_map
+                .entry(doc_title.clone())
+                .or_insert_with(|| (doc_id, Vec::new()));
+            entry.1.push(content);
+        }
+
+        let mut all_meta: Vec<FinancialDocMetadata> = Vec::with_capacity(docs_map.len());
+        let mut positive_amount_docs = 0usize;
+        for (doc_title, (doc_id, chunks)) in docs_map {
+            let full_text = chunks.join("\n");
+            let meta = FinancialDocMetadata::extract(&doc_id, &doc_title, &full_text);
+            if meta.amount_gross.unwrap_or(0.0) > 0.0 {
+                positive_amount_docs += 1;
+            }
+            all_meta.push(meta);
+        }
+
+        if positive_amount_docs < 2 {
+            return Ok(None);
+        }
+
+        let filter_years = extract_query_years(query);
+        let q_low = query.to_lowercase();
+
+        // Dynamically detect if the query asks for a specific subfolder/category group present in the DB
+        let mut distinct_cats: Vec<String> = all_meta
+            .iter()
+            .map(|m| m.category_group.clone())
+            .filter(|c| {
+                let cl = c.to_lowercase();
+                c.len() >= 3
+                    && !cl.contains("einzelbelege")
+                    && !cl.contains("allgemein")
+                    && !c.chars().all(|ch| ch.is_ascii_digit())
+            })
+            .collect();
+        distinct_cats.sort();
+        distinct_cats.dedup();
+        // Sort longest category name first so specific names match before shorter prefixes
+        distinct_cats.sort_by_key(|b| std::cmp::Reverse(b.len()));
+
+        let matched_category = distinct_cats.into_iter().find(|cat| {
+            let cl = cat.to_lowercase();
+            q_low.contains(&cl)
+        });
+
+        let report_md = format_financial_aggregation_markdown(
+            &all_meta,
+            &filter_years,
+            matched_category.as_deref(),
+        );
+        if report_md.is_empty() {
+            return Ok(None);
+        }
+
+        let scope_title = if !filter_years.is_empty() {
+            let yrs: Vec<String> = filter_years.iter().map(|y| y.to_string()).collect();
+            format!(
+                "📊 SurrealDB Exakte Rechnungs-Aggregation ({})",
+                yrs.join(", ")
+            )
+        } else {
+            "📊 SurrealDB Exakte Rechnungs-Aggregation (Alle Jahre)".to_string()
+        };
+
+        Ok(Some(RetrievedChunk {
+            id: "surrealdb_financial_aggregation".to_string(),
+            doc_id: "surrealdb_financial_aggregation".to_string(),
+            doc_title: scope_title,
+            chunk_index: 0,
+            content: report_md,
+            rrf_score: 1.0,
+            rerank_score: Some(1.0),
+            entities: vec![],
+            related_entities: vec![],
+            relations_out: vec![],
+            relations_in: vec![],
+            relations: vec![],
+        }))
     }
 }
