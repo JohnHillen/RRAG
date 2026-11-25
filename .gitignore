@@ -12,9 +12,10 @@ logs/
 .pids/
 *.log
 
-# Documents / PDFs (keep Showcase documents in Git)
+# Documents / PDFs & local law corpora (keep Showcase documents in Git)
 *.pdf
 !Showcase/**/documents/**/*.pdf
+Gesetze/
 
 # IDE settings
 .vscode/
