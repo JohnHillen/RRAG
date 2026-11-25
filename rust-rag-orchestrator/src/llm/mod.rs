@@ -120,8 +120,8 @@ impl LlmClient {
             return vec!["none (Retrieval only)".to_string()];
         }
 
-        // 1st attempt: If Ollama (native or port 11434), query `/api/tags`
-        if provider == "ollama" || base_url.contains(":11434") {
+        // 1st attempt: If Ollama (native or port 11434 / 11435), query `/api/tags`
+        if provider == "ollama" || base_url.contains(":11434") || base_url.contains(":11435") {
             let ollama_root = base_url.trim_end_matches('/').trim_end_matches("/v1");
             let tags_url = format!("{}/api/tags", ollama_root);
             if let Ok(resp) = self
@@ -293,6 +293,7 @@ impl LlmClient {
                 let ent_names: Vec<String> = c
                     .entities
                     .iter()
+                    .take(15)
                     .map(|e| format!("{} ({})", e.name, e.entity_type))
                     .collect();
                 out.push_str(&format!("  -> Mentioned entities: {}\n", ent_names.join(", ")));
@@ -301,6 +302,7 @@ impl LlmClient {
                 let rel_names: Vec<String> = c
                     .related_entities
                     .iter()
+                    .take(15)
                     .map(|e| format!("{} ({})", e.name, e.entity_type))
                     .collect();
                 out.push_str(&format!(
@@ -312,6 +314,7 @@ impl LlmClient {
                 let rel_triplets: Vec<String> = c
                     .relations
                     .iter()
+                    .take(18)
                     .map(|r| format!("({} --[{}]--> {})", r.from, r.relation, r.to))
                     .collect();
                 out.push_str(&format!(
@@ -325,6 +328,7 @@ impl LlmClient {
     }
 
     /// Optionally extracts entities and relations for GraphRAG using the configured LLM.
+    /// Contains zero domain- or dataset-specific code.
     pub async fn extract_graph_entities(
         &self,
         text: &str,
@@ -339,10 +343,10 @@ impl LlmClient {
             return Ok((vec![], vec![]));
         }
 
-        let sample: String = text.chars().take(3500).collect();
+        let sample: String = text.chars().take(2500).collect();
         let prompt = format!(
-            r#"Extract key entities (persons, organizations, projects, technical skills/programming languages/databases, language proficiency levels, standards/certifications) and their relationships from the following text as a pure JSON object:
-{{"entities": [{{"name": "...", "entity_type": "Person|Organization|Project|Skill|Certification|Document", "description": "..."}}], "relations": [{{"source": "...", "relation": "works_on|belongs_to|has_skill|requires_skill|guarantees_for|references|regulates", "target": "..."}}]}}
+            r#"Extract up to 8 key entities and their relationships from the following text as a pure JSON object:
+{{"entities": [{{"name": "...", "entity_type": "Organization|Person|Concept|Document|System|Location", "description": "..."}}], "relations": [{{"source": "...", "relation": "relates_to|references|requires|belongs_to|regulates", "target": "..."}}]}}
 
 Text:
 {}"#,
@@ -361,11 +365,24 @@ Text:
             },
         ];
 
-        if let Ok(raw) = self.chat_completion(&messages, None, Some(0.0), None, None).await {
-            let trimmed = if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}')) {
-                &raw[start..=end]
+        if let Ok(raw) = self
+            .chat_completion(&messages, None, Some(0.0), Some(4096), Some(false))
+            .await
+        {
+            let after_think = match raw.rfind("</think>") {
+                Some(pos) => &raw[pos + 8..],
+                None => raw.as_str(),
+            };
+            let trimmed = if let (Some(start), Some(end)) =
+                (after_think.find('{'), after_think.rfind('}'))
+            {
+                if start < end {
+                    &after_think[start..=end]
+                } else {
+                    after_think.trim()
+                }
             } else {
-                raw.trim()
+                after_think.trim()
             };
 
             if let Ok(parsed) = serde_json::from_str::<ExtractedGraphData>(trimmed) {
@@ -396,9 +413,17 @@ Text:
 }
 
 /// If running inside a Docker container (`/.dockerenv`) and the user specifies
-/// `localhost` or `127.0.0.1`, automatically map to `host.docker.internal`.
+/// `localhost` or `127.0.0.1`, automatically map to `host.docker.internal`
+/// (except for port `:11435` or `:18081` when the container-internal RunPod SSH tunnel is active).
 pub(crate) fn normalize_docker_localhost(url: &str) -> String {
     if std::path::Path::new("/.dockerenv").exists() {
+        if (url.contains(":11435") || url.contains(":18081"))
+            && std::path::Path::new("/tmp/runpod_ui_tunnel.active").exists()
+        {
+            return url
+                .replace("://localhost", "://127.0.0.1")
+                .replace("://host.docker.internal", "://127.0.0.1");
+        }
         url.replace("://localhost", "://host.docker.internal")
             .replace("://127.0.0.1", "://host.docker.internal")
     } else {

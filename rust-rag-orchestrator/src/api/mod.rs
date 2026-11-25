@@ -1,3 +1,3 @@
 pub mod chat;
 pub mod mcp;
-pub mod showcases;
+pub mod runpod;

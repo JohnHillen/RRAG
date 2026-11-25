@@ -20,6 +20,23 @@ impl SurrealClient {
         Ok(cnt)
     }
 
+    /// Checks whether a document already has stored graph relations in `document.metadata.relations`.
+    pub async fn doc_has_graph_relations(&self, doc_id: &str) -> Result<bool> {
+        let sql = format!(
+            "SELECT metadata.relations AS rels FROM type::record('document', {});",
+            serde_json::to_string(doc_id)?
+        );
+        let res = self.execute_sql(&sql).await?;
+        let arr = extract_result_array(res.first());
+        let has_rels = arr
+            .first()
+            .and_then(|v| v.get("rels"))
+            .and_then(|r| r.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        Ok(has_rels)
+    }
+
     /// Replaces older revisions of a document sharing the same `title` (but differing content hash `doc_id`).
     pub async fn replace_older_revisions(&self, title: &str, new_doc_id: &str) -> Result<bool> {
         let check_sql = format!(
@@ -199,7 +216,7 @@ impl SurrealClient {
         );
         self.execute_sql(&doc_stmt).await?;
 
-        for batch in chunks.chunks(20) {
+        for batch in chunks.chunks(80) {
             let mut batch_sql = String::new();
             for (idx, content, embedding) in batch {
                 let chunk_key = format!("{}_{}", doc_id, idx);
@@ -226,34 +243,52 @@ impl SurrealClient {
                 if clean_key.is_empty() {
                     continue;
                 }
-                let entity_json = json!({
-                    "name": name,
-                    "entity_type": entity_type,
-                    "description": description,
-                });
+                let entity_json = match description {
+                    Some(desc) if !desc.trim().is_empty() => json!({
+                        "name": name,
+                        "entity_type": entity_type,
+                        "description": desc,
+                    }),
+                    _ => json!({
+                        "name": name,
+                        "entity_type": entity_type,
+                    }),
+                };
                 graph_sql.push_str(&format!(
                     "UPSERT type::record('entity', {}) CONTENT {};\n",
                     serde_json::to_string(&clean_key)?,
                     entity_json
                 ));
 
-                let mut matched_any = false;
+                let mut matched_count = 0usize;
+                let name_lower = name.to_lowercase();
+                let desc_lower = description
+                    .as_deref()
+                    .map(|d| d.trim().to_lowercase())
+                    .filter(|d| d.len() >= 3 && d.len() <= 40);
+
                 for (idx, content, _) in chunks {
-                    if content.to_lowercase().contains(&name.to_lowercase()) {
-                        matched_any = true;
+                    // Match against chunk body (skipping the synthetic `[Dokument: ...]` metadata line if present)
+                    let body = match content.find('\n') {
+                        Some(pos) if content.starts_with('[') => &content[pos + 1..],
+                        _ => content.as_str(),
+                    };
+                    let body_low = body.to_lowercase();
+                    let is_match = body_low.contains(&name_lower)
+                        || desc_lower
+                            .as_ref()
+                            .map_or(false, |d| body_low.contains(d.as_str()));
+                    if is_match {
+                        matched_count += 1;
                         let chunk_key = format!("{}_{}", doc_id, idx);
                         graph_sql.push_str(&format!(
                             "RELATE chunk:{}->mentions->entity:{};\n",
                             chunk_key, clean_key
                         ));
+                        if matched_count >= 12 {
+                            break;
+                        }
                     }
-                }
-                if !matched_any && !chunks.is_empty() {
-                    let first_chunk_key = format!("{}_0", doc_id);
-                    graph_sql.push_str(&format!(
-                        "RELATE chunk:{}->mentions->entity:{};\n",
-                        first_chunk_key, clean_key
-                    ));
                 }
             }
 

@@ -925,16 +925,12 @@ echo -e "  • Hybrid + Graph Retrieval : POST http://localhost:${ORCHESTRATOR_P
 echo -e "  • OpenAI-compatible Chat   : POST http://localhost:${ORCHESTRATOR_PORT}/v1/chat/completions"
 echo -e "  • MCP Server (Tool Calls)  : POST http://localhost:${ORCHESTRATOR_PORT}/mcp"
 
-# 8. Handle Showcase loading (By default NO showcase is loaded at startup unless --showcase <name> is passed)
+# 8. Handle Showcase loading (By default NO showcase is loaded at startup unless --showcase <name> is passed; existing SurrealDB data is preserved)
 if [[ -n "$SHOWCASE_ARG" ]]; then
     load_showcase_into_running_stack "$SHOWCASE_ARG"
 else
-    curl -sf -X DELETE "http://localhost:${ORCHESTRATOR_PORT}/v1/crm/employees" > /dev/null 2>&1 || true
-    curl -sf -X DELETE "http://localhost:${ORCHESTRATOR_PORT}/v1/fleet/overview" > /dev/null 2>&1 || true
-    echo -e "\n${BLUE}[SHOWCASE] No showcase loaded by default (clean startup).${NC}"
-    echo -e "  To load a showcase anytime, run:"
+    echo -e "\n${BLUE}[PERSISTENCE] Existing SurrealDB documents, embeddings, and graphs preserved.${NC}"
+    echo -e "  Optional commands:"
     echo -e "    • ${GREEN}./setup.sh --showcase list${NC}       (List available showcases in ./Showcase/)"
-    echo -e "    • ${GREEN}./setup.sh --showcase 1${NC}          (Load Showcase_01_HR_Consulting)"
-    echo -e "    • ${GREEN}./setup.sh --showcase 2${NC}          (Load Showcase_02_Spedition)"
-    echo -e "    • ${GREEN}./setup.sh --showcase 3${NC}          (Load Showcase_03_Webstore Multi-DB)"
+    echo -e "    • ${GREEN}./setup.sh --reset-db${NC}            (Wipe SurrealDB volume completely)"
 fi

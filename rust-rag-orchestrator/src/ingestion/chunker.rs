@@ -27,8 +27,8 @@ impl InferenceClient {
         doc_title: Option<&str>,
         text: &str,
     ) -> Vec<String> {
-        let target_max = self.config.chunk_max_chars.max(1600);
-        let hard_max = target_max + 900;
+        let target_max = self.config.chunk_max_chars.max(2200);
+        let hard_max = target_max + 1000;
 
         let extracted_pdf_title = extract_document_main_title(text);
         let doc_context_prefix =
@@ -48,7 +48,7 @@ impl InferenceClient {
         for block in blocks {
             match block {
                 StructuralBlock::Heading(h) => {
-                    if current_has_body && current_chunk.len() >= 1100 {
+                    if current_has_body && current_chunk.len() >= 1200 {
                         raw_chunks.push((chunk_heading.clone(), current_chunk.trim().to_string()));
                         current_chunk.clear();
                         current_has_body = false;

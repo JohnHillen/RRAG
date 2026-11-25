@@ -2,7 +2,6 @@ use crate::db::{extract_result_array, RetrievedChunk};
 use serde_json::Value;
 
 /// Generic SQL-result-to-Markdown-table formatter.
-/// Contains zero showcase-specific column or table names:
 /// 1. Orders columns in the exact order they appear in the `SELECT` statement.
 /// 2. For `SELECT *` queries, uses a generic naming heuristic (`*_id` first, `*name*`/`*title*` second).
 pub fn format_sql_results_as_chunk(

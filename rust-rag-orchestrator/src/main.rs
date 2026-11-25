@@ -5,7 +5,10 @@ pub mod ingestion;
 pub mod llm;
 pub mod retrieval;
 
-pub use api::{chat, mcp, showcases};
+#[path = "../../Showcase/mod.rs"]
+pub mod showcases;
+
+pub use api::{chat, mcp, runpod};
 pub use ingestion::{attachments, documents, pdf};
 pub use retrieval::{execute_retrieval_pipeline, sql_formatter, text_to_sql};
 
@@ -22,12 +25,7 @@ use ingestion::InferenceClient;
 use llm::LlmClient;
 use reqwest::Client;
 use serde_json::json;
-use showcases::ActiveShowcase;
-use std::{
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{net::SocketAddr, time::Duration};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::info;
 
@@ -38,42 +36,6 @@ pub struct AppState {
     pub external_db: Option<db::external::ExternalDbClient>,
     pub inference: InferenceClient,
     pub llm: LlmClient,
-    pub active_showcase: Arc<RwLock<ActiveShowcase>>,
-}
-
-impl AppState {
-    pub fn get_active_showcase(&self) -> ActiveShowcase {
-        self.active_showcase
-            .read()
-            .map(|g| *g)
-            .unwrap_or(ActiveShowcase::None)
-    }
-
-    pub fn set_active_showcase(&self, sc: ActiveShowcase) {
-        if let Ok(mut g) = self.active_showcase.write() {
-            *g = sc;
-        }
-    }
-
-    pub fn set_active_showcase_if_matches(&self, expected: ActiveShowcase, next: ActiveShowcase) {
-        if let Ok(mut g) = self.active_showcase.write() {
-            if *g == expected {
-                *g = next;
-            }
-        }
-    }
-
-    /// Returns the attached external SurrealDB client (or an isolated `webstore_external / shop_erp` SurrealClient)
-    /// for Showcase 03 (Webstore Multi-DB).
-    pub fn webstore_external_db(&self) -> SurrealClient {
-        if let Some(db::external::ExternalDbClient::Surreal(ref ext)) = self.external_db {
-            return ext.clone();
-        }
-        let mut ext_cfg = self.config.clone();
-        ext_cfg.surreal_ns = "webstore_external".into();
-        ext_cfg.surreal_db = "shop_erp".into();
-        SurrealClient::new(self.db.http_client(), ext_cfg)
-    }
 }
 
 #[tokio::main]
@@ -89,7 +51,7 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env();
     let http = Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .build()?;
     let llm_http = Client::builder()
         .connect_timeout(Duration::from_secs(20))
@@ -104,10 +66,9 @@ async fn main() -> Result<()> {
         inference: InferenceClient::new(http.clone(), config.clone()),
         llm: LlmClient::new(llm_http, config.clone()),
         config: config.clone(),
-        active_showcase: Arc::new(RwLock::new(ActiveShowcase::None)),
     };
 
-    // Restore persisted system LLM settings from SurrealDB & check if an existing showcase is already in DB
+    // Restore persisted system LLM settings from SurrealDB
     let state_clone = state.clone();
     tokio::spawn(async move {
         for _ in 0..15 {
@@ -121,10 +82,12 @@ async fn main() -> Result<()> {
                     prov, model
                 );
                 showcases::detect_active_showcase_on_startup(&state_clone).await;
+                runpod::restore_runpod_settings_from_db(&state_clone).await;
                 break;
             }
             if state_clone.db.execute_sql("INFO FOR DB;").await.is_ok() {
                 showcases::detect_active_showcase_on_startup(&state_clone).await;
+                runpod::restore_runpod_settings_from_db(&state_clone).await;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -139,6 +102,12 @@ async fn main() -> Result<()> {
             get(chat::get_llm_config_handler).post(chat::update_llm_config_handler),
         )
         .route("/v1/llm/models", post(chat::discover_llm_models_handler))
+        .route("/v1/runpod/status", get(runpod::get_runpod_status_handler))
+        .route("/v1/runpod/config", post(runpod::save_runpod_config_handler))
+        .route("/v1/runpod/start", post(runpod::start_runpod_handler))
+        .route("/v1/runpod/stop", post(runpod::stop_runpod_handler))
+        .route("/v1/db/export", get(documents::export_surreal_db_handler))
+        .route("/v1/db/import", post(documents::import_surreal_db_handler))
         .route("/v1/documents", get(documents::list_documents_handler))
         .route(
             "/v1/documents/deduplicate",
@@ -164,7 +133,7 @@ async fn main() -> Result<()> {
         .route("/mcp", post(mcp::handle_mcp_request))
         .merge(showcases::router())
         .fallback_service(ServeDir::new("./static"))
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

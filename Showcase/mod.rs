@@ -1,20 +1,25 @@
 #![allow(unused_variables, unused_mut, unused_imports)]
 
 #[cfg(feature = "showcase-01")]
-#[path = "../../../Showcase/Showcase_01_HR_Consulting/src/mod.rs"]
+#[path = "Showcase_01_HR_Consulting/src/mod.rs"]
 pub mod showcase_01_hr;
 
 #[cfg(feature = "showcase-02")]
-#[path = "../../../Showcase/Showcase_02_Spedition/src/mod.rs"]
+#[path = "Showcase_02_Spedition/src/mod.rs"]
 pub mod showcase_02_spedition;
 
 #[cfg(feature = "showcase-03")]
-#[path = "../../../Showcase/Showcase_03_Webstore/src/mod.rs"]
+#[path = "Showcase_03_Webstore/src/mod.rs"]
 pub mod showcase_03_webstore;
 
-use crate::{db::RetrievedChunk, mcp::JsonRpcResponse, AppState};
+use crate::{
+    db::{RetrievedChunk, SurrealClient},
+    mcp::JsonRpcResponse,
+    AppState,
+};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
+use std::sync::RwLock;
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +28,42 @@ pub enum ActiveShowcase {
     HrConsulting,
     Spedition,
     Webstore,
+}
+
+static ACTIVE_SHOWCASE: RwLock<ActiveShowcase> = RwLock::new(ActiveShowcase::None);
+
+impl AppState {
+    pub fn get_active_showcase(&self) -> ActiveShowcase {
+        ACTIVE_SHOWCASE
+            .read()
+            .map(|g| *g)
+            .unwrap_or(ActiveShowcase::None)
+    }
+
+    pub fn set_active_showcase(&self, sc: ActiveShowcase) {
+        if let Ok(mut g) = ACTIVE_SHOWCASE.write() {
+            *g = sc;
+        }
+    }
+
+    pub fn set_active_showcase_if_matches(&self, expected: ActiveShowcase, next: ActiveShowcase) {
+        if let Ok(mut g) = ACTIVE_SHOWCASE.write() {
+            if *g == expected {
+                *g = next;
+            }
+        }
+    }
+
+    /// Returns the isolated `webstore_external / shop_erp` SurrealClient for Showcase 03 (Webstore Multi-DB).
+    pub fn webstore_external_db(&self) -> SurrealClient {
+        if let Some(crate::db::external::ExternalDbClient::Surreal(ref ext)) = self.external_db {
+            return ext.clone();
+        }
+        let mut ext_cfg = self.config.clone();
+        ext_cfg.surreal_ns = "webstore_external".into();
+        ext_cfg.surreal_db = "shop_erp".into();
+        SurrealClient::new(self.db.http_client(), ext_cfg)
+    }
 }
 
 /// Mounts showcase HTTP endpoints and `/v1/showcase/reset`.
@@ -77,7 +118,7 @@ async fn reset_showcase_handler(State(state): State<AppState>) -> impl IntoRespo
     feature = "showcase-02",
     feature = "showcase-03"
 ))]
-async fn count_table_rows_on(client: &crate::db::SurrealClient, table: &str) -> usize {
+async fn count_table_rows_on(client: &SurrealClient, table: &str) -> usize {
     let sql = format!("SELECT count() AS cnt FROM {} GROUP ALL;", table);
     client
         .execute_sql(&sql)
@@ -169,9 +210,8 @@ pub fn expand_hop2_terms_if_active(
     }
 }
 
-/// Runs showcase-specific retrieval augmentation ONLY for the currently active showcase,
-/// AND additionally queries any attached external database (`EXTERNAL_DB_SCHEMA_PROMPT` / `EXTERNAL_DB_SCHEMA_FILE`).
-pub async fn finalize_retrieval_for_active_showcase(
+/// Runs showcase-specific retrieval augmentation ONLY for the currently active showcase.
+pub async fn augment_for_active_showcase(
     state: &AppState,
     query: &str,
     mut ranked_pool: Vec<RetrievedChunk>,
@@ -179,9 +219,7 @@ pub async fn finalize_retrieval_for_active_showcase(
     db_ms: &mut u64,
     reranker_used: &mut String,
 ) -> Vec<RetrievedChunk> {
-    let primary_anchor = ranked_pool.first().cloned();
-
-    let mut chunks = match state.get_active_showcase() {
+    match state.get_active_showcase() {
         #[cfg(feature = "showcase-01")]
         ActiveShowcase::HrConsulting => {
             showcase_01_hr::augment_retrieval(
@@ -222,45 +260,7 @@ pub async fn finalize_retrieval_for_active_showcase(
             ranked_pool.truncate(top_n);
             ranked_pool
         }
-    };
-
-    if let Some(ref ext_schema) = state.config.external_db_schema_prompt {
-        let t_ext = std::time::Instant::now();
-        let ext_chunk_opt = if let Some(ref ext_client) = state.external_db {
-            crate::text_to_sql::execute_dynamic_text_to_sql_on_external(
-                state,
-                ext_client,
-                query,
-                primary_anchor.as_ref(),
-                ext_schema,
-                "external_db_live_query_result",
-                "external_attached_database",
-                "🔌 [Externe SQL-DB Text-to-SQL]",
-            )
-            .await
-        } else {
-            crate::text_to_sql::execute_dynamic_text_to_sql_on_client(
-                state,
-                &state.db,
-                query,
-                primary_anchor.as_ref(),
-                ext_schema,
-                "external_db_live_query_result",
-                "external_attached_database",
-                "🔌 [Externe DB Text-to-SQL]",
-            )
-            .await
-        };
-
-        if let Some(ext_chunk) = ext_chunk_opt {
-            *db_ms += t_ext.elapsed().as_millis() as u64;
-            let insert_idx = chunks.len().min(2);
-            chunks.insert(insert_idx, ext_chunk);
-            *reranker_used = format!("{} + 🔌 Text-to-SQL (Externe DB)", reranker_used);
-        }
     }
-
-    chunks
 }
 
 /// Appends MCP tool definitions only for the currently active showcase.

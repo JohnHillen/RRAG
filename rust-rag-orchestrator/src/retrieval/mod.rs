@@ -97,24 +97,19 @@ pub async fn execute_retrieval_pipeline(
         for ent in &anchor.entities {
             let name = ent.name.trim();
             if !name.is_empty()
-                && !matches!(
-                    name.to_lowercase().as_str(),
-                    "hr" | "sales" | "projects" | "general"
-                )
                 && !hop2_entities.iter().any(|x| x.eq_ignore_ascii_case(name))
+                && hop2_entities.len() < 10
             {
                 hop2_entities.push(name.to_string());
             }
         }
-        for rel in &anchor.relations {
+        for rel in anchor.relations.iter().take(6) {
             for endpoint in [&rel.from, &rel.to] {
                 let name = endpoint.trim();
                 if !name.is_empty()
-                    && !matches!(
-                        name.to_lowercase().as_str(),
-                        "hr" | "sales" | "projects" | "general"
-                    )
+                    && name.len() >= 5
                     && !hop2_entities.iter().any(|x| x.eq_ignore_ascii_case(name))
+                    && hop2_entities.len() < 10
                 {
                     hop2_entities.push(name.to_string());
                 }
@@ -136,7 +131,7 @@ pub async fn execute_retrieval_pipeline(
         hop2_triggered = true;
         if let Ok(graph_chunks) = state
             .db
-            .fetch_graph_hop_chunks(&hop2_entities, &existing_ids, 10)
+            .fetch_graph_hop_chunks(&hop2_entities, &existing_ids, 8)
             .await
         {
             for gc in graph_chunks {
@@ -149,20 +144,13 @@ pub async fn execute_retrieval_pipeline(
     }
 
     let mut enriched_rerank_query = query.to_string();
-    if !hop2_keywords.is_empty() || !hop2_entities.is_empty() {
+    if !hop2_keywords.is_empty() {
         let mut expansion_terms: Vec<String> = Vec::new();
         showcases::expand_hop2_terms_if_active(state, &query_lower, &mut expansion_terms);
 
         for k in hop2_keywords.iter().take(6) {
             if !expansion_terms.iter().any(|x| x.eq_ignore_ascii_case(k)) {
                 expansion_terms.push(k.clone());
-            }
-        }
-        for e in hop2_entities.iter().take(5) {
-            if !query_lower.contains(&e.to_lowercase())
-                && !expansion_terms.iter().any(|x| x.eq_ignore_ascii_case(e))
-            {
-                expansion_terms.push(e.clone());
             }
         }
 
@@ -221,7 +209,8 @@ pub async fn execute_retrieval_pipeline(
         }
     }
 
-    let final_chunks = showcases::finalize_retrieval_for_active_showcase(
+    let primary_anchor = ranked_pool.first().cloned();
+    let mut final_chunks = showcases::augment_for_active_showcase(
         state,
         query,
         ranked_pool,
@@ -230,6 +219,42 @@ pub async fn execute_retrieval_pipeline(
         &mut reranker_used,
     )
     .await;
+
+    if let Some(ref ext_schema) = state.config.external_db_schema_prompt {
+        let t_ext = std::time::Instant::now();
+        let ext_chunk_opt = if let Some(ref ext_client) = state.external_db {
+            text_to_sql::execute_dynamic_text_to_sql_on_external(
+                state,
+                ext_client,
+                query,
+                primary_anchor.as_ref(),
+                ext_schema,
+                "external_db_live_query_result",
+                "external_attached_database",
+                "🔌 [Externe SQL-DB Text-to-SQL]",
+            )
+            .await
+        } else {
+            text_to_sql::execute_dynamic_text_to_sql_on_client(
+                state,
+                &state.db,
+                query,
+                primary_anchor.as_ref(),
+                ext_schema,
+                "external_db_live_query_result",
+                "external_attached_database",
+                "🔌 [Externe DB Text-to-SQL]",
+            )
+            .await
+        };
+
+        if let Some(ext_chunk) = ext_chunk_opt {
+            db_ms += t_ext.elapsed().as_millis() as u64;
+            let insert_idx = final_chunks.len().min(2);
+            final_chunks.insert(insert_idx, ext_chunk);
+            reranker_used = format!("{} + 🔌 Text-to-SQL (Externe DB)", reranker_used);
+        }
+    }
 
     let metrics = RetrievalMetrics {
         embed_ms,

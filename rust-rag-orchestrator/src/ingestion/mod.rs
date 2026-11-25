@@ -2,6 +2,8 @@ pub mod attachments;
 pub mod chunker;
 pub mod documents;
 pub mod pdf;
+pub mod pipelines;
+pub mod xml;
 
 use crate::config::AppConfig;
 use crate::db::RetrievedChunk;
@@ -9,11 +11,13 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct InferenceClient {
     pub(crate) http: Client,
     pub(crate) config: AppConfig,
+    pub(crate) runtime_embed_url: Arc<RwLock<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,21 +28,46 @@ struct TeiRerankItem {
 
 impl InferenceClient {
     pub fn new(http: Client, config: AppConfig) -> Self {
-        Self { http, config }
+        let initial_embed_url = config.tei_embed_url.clone();
+        Self {
+            http,
+            config,
+            runtime_embed_url: Arc::new(RwLock::new(initial_embed_url)),
+        }
+    }
+
+    pub fn get_embed_url(&self) -> String {
+        self.runtime_embed_url
+            .read()
+            .map(|u| u.clone())
+            .unwrap_or_else(|_| self.config.tei_embed_url.clone())
+    }
+
+    pub fn set_embed_url(&self, url: String) {
+        if let Ok(mut guard) = self.runtime_embed_url.write() {
+            *guard = url;
+        }
     }
 
     /// Generates dense vector embeddings for a slice of texts via Hugging Face TEI (`/embed`).
+    /// Sorts texts by length before batching (and restores original order afterward) to minimize
+    /// Transformer sequence-padding overhead in TEI.
     pub async fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
         }
 
-        let url = format!("{}/embed", self.config.tei_embed_url.trim_end_matches('/'));
-        let mut all_embeddings = Vec::with_capacity(texts.len());
+        let current_embed_url = self.get_embed_url();
+        let url = format!("{}/embed", current_embed_url.trim_end_matches('/'));
+        let mut indexed: Vec<(usize, &String)> = texts.iter().enumerate().collect();
+        indexed.sort_by_key(|(_, s)| s.len());
 
-        for batch in texts.chunks(16) {
+        let mut all_embeddings: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+
+        for batch in indexed.chunks(12) {
+            let batch_inputs: Vec<&str> = batch.iter().map(|(_, s)| s.as_str()).collect();
             let payload = json!({
-                "inputs": batch,
+                "inputs": batch_inputs,
                 "truncate": true
             });
 
@@ -60,10 +89,12 @@ impl InferenceClient {
                 .json()
                 .await
                 .context("Failed to parse TEI embedding response")?;
-            all_embeddings.extend(batch_vecs);
+            for ((orig_idx, _), vec) in batch.iter().zip(batch_vecs.into_iter()) {
+                all_embeddings[*orig_idx] = Some(vec);
+            }
         }
 
-        Ok(all_embeddings)
+        Ok(all_embeddings.into_iter().flatten().collect())
     }
 
     /// Reranks retrieved candidate chunks using the selected Cross-Encoder model

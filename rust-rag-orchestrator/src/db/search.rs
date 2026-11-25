@@ -16,6 +16,37 @@ impl SurrealClient {
     ) -> Result<Vec<RetrievedChunk>> {
         let pool_k = (top_k * 2).max(25);
         let bm25_query = expand_query_for_bm25(query_text);
+        let structured_ids = extract_structured_identifiers(query_text);
+
+        let exact_id_sql = if !structured_ids.is_empty() {
+            let conds: Vec<String> = structured_ids
+                .iter()
+                .filter_map(|d| serde_json::to_string(d).ok())
+                .map(|d_json| format!("string::lowercase(content) CONTAINS string::lowercase({})", d_json))
+                .collect();
+            format!(
+                r#"
+            -- 3. Structured Identifier / Heading Reference Match
+            SELECT
+                record::id(id) AS id,
+                doc_id,
+                doc_title,
+                chunk_index,
+                content,
+                ->mentions->entity.{{name, entity_type, description}} AS entities,
+                ->mentions->entity->relates_to->entity.{{name, entity_type, description}} AS related_entities,
+                ->mentions->entity->relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_out,
+                ->mentions->entity<-relates_to.{{ from: in.name, relation: relation_type, to: out.name }} AS relations_in
+            FROM chunk
+            WHERE {}
+            LIMIT 25;
+            "#,
+                conds.join(" OR ")
+            )
+        } else {
+            String::new()
+        };
+
         let sql = format!(
             r#"
             LET $q_vec = {vec_json};
@@ -53,16 +84,23 @@ impl SurrealClient {
             WHERE content @1@ $q_txt
             ORDER BY bm25_score DESC
             LIMIT {k};
+            {exact_sql}
             "#,
             vec_json = serde_json::to_string(query_embedding)?,
             txt_json = serde_json::to_string(&bm25_query)?,
-            k = pool_k
+            k = pool_k,
+            exact_sql = exact_id_sql
         );
 
         let raw_responses = self.execute_sql(&sql).await?;
 
         let vec_items = extract_result_array(raw_responses.get(2));
         let bm25_items = extract_result_array(raw_responses.get(3));
+        let exact_items = if !structured_ids.is_empty() {
+            extract_result_array(raw_responses.get(4))
+        } else {
+            Vec::new()
+        };
 
         use std::collections::HashMap;
         let mut fused_map: HashMap<String, RetrievedChunk> = HashMap::new();
@@ -86,12 +124,48 @@ impl SurrealClient {
                     .and_modify(|existing| {
                         existing.rrf_score += score;
                         for rel in chunk.relations.clone() {
-                            if !existing.relations.contains(&rel) {
+                            if !existing.relations.contains(&rel) && existing.relations.len() < 20 {
                                 existing.relations.push(rel);
                             }
                         }
                     })
                     .or_insert(chunk);
+            }
+        }
+
+        for val in exact_items {
+            if let Ok(mut chunk) = serde_json::from_value::<RetrievedChunk>(val) {
+                finalize_chunk_relations(&mut chunk);
+                fused_map
+                    .entry(chunk.id.clone())
+                    .and_modify(|existing| {
+                        existing.rrf_score += 0.5 / (rrf_k + 1.0);
+                    })
+                    .or_insert_with(|| {
+                        chunk.rrf_score = 1.0 / (rrf_k + 1.0);
+                        chunk
+                    });
+            }
+        }
+
+        if !structured_ids.is_empty() {
+            for chunk in fused_map.values_mut() {
+                let c_low = chunk.content.to_lowercase();
+                let first_line_low = chunk
+                    .content
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_lowercase();
+                for desig in &structured_ids {
+                    let d_low = desig.to_lowercase();
+                    let md_heading = format!("## {}", d_low);
+                    if c_low.contains(&md_heading) || first_line_low.contains(&d_low) {
+                        chunk.rrf_score += 2.2 / (rrf_k + 1.0);
+                    } else if c_low.contains(&d_low) {
+                        chunk.rrf_score += 1.2 / (rrf_k + 1.0);
+                    }
+                }
             }
         }
 
@@ -210,7 +284,7 @@ impl SurrealClient {
                 }
 
                 let overlap_count = matched_entities.len().max(1);
-                chunk.rrf_score = (overlap_count as f64) * 0.015;
+                chunk.rrf_score = (overlap_count.min(4) as f64) * 0.005;
                 scored_chunks.push((overlap_count, chunk));
             }
         }
@@ -224,6 +298,7 @@ impl SurrealClient {
 }
 
 pub(crate) fn finalize_chunk_relations(chunk: &mut RetrievedChunk) {
+    chunk.related_entities.truncate(15);
     chunk.relations.extend(chunk.relations_out.clone());
     chunk.relations.extend(chunk.relations_in.clone());
     let mut seen = std::collections::HashSet::new();
@@ -237,6 +312,71 @@ pub(crate) fn finalize_chunk_relations(chunk: &mut RetrievedChunk) {
                 r.to.to_lowercase()
             ))
     });
+    chunk.relations.truncate(20);
+}
+
+/// Generically extracts structured alphanumeric/numeric identifiers and references from a query
+/// using pure character-class rules (tokens containing digits, optionally paired with an adjacent
+/// prefix symbol/label and a trailing uppercase acronym). Contains zero domain-specific keywords.
+fn extract_structured_identifiers(query: &str) -> Vec<String> {
+    let mut identifiers = Vec::new();
+    let raw_tokens: Vec<&str> = query.split_whitespace().collect();
+
+    for (i, &raw_tok) in raw_tokens.iter().enumerate() {
+        let num_tok = raw_tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-');
+        if num_tok.is_empty() || !num_tok.chars().any(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        // Check if preceded by a symbol token or a short capitalized designator token
+        let prev_prefix = if i > 0 {
+            let p = raw_tokens[i - 1].trim_matches(|c: char| c == ',' || c == ';' || c == '(' || c == ')');
+            let is_symbol_token = !p.is_empty() && p.chars().all(|c| !c.is_alphanumeric());
+            let is_cap_label = !p.is_empty()
+                && p.len() <= 12
+                && p.chars().next().map_or(false, |c| c.is_uppercase())
+                && !extract_query_keywords(p).is_empty();
+            if is_symbol_token {
+                let first_sym: String = p.chars().take(1).collect();
+                Some(first_sym)
+            } else if is_cap_label {
+                Some(p.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Check if followed immediately by an uppercase acronym token (2+ uppercase chars)
+        let next_acronym = if i + 1 < raw_tokens.len() {
+            let cand = raw_tokens[i + 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
+            let upper_count = cand.chars().filter(|c| c.is_uppercase()).count();
+            if upper_count >= 2 && cand.len() >= 2 && cand.len() <= 16 {
+                Some(cand.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let candidate = match (prev_prefix, next_acronym) {
+            (Some(p), Some(a)) => Some(format!("{} {} {}", p, num_tok, a)),
+            (Some(p), None) => Some(format!("{} {}", p, num_tok)),
+            (None, Some(a)) => Some(format!("{} {}", num_tok, a)),
+            (None, None) if num_tok.chars().any(|c| c.is_alphabetic()) => Some(num_tok.to_string()),
+            _ => None,
+        };
+
+        if let Some(id_str) = candidate {
+            if !identifiers.contains(&id_str) {
+                identifiers.push(id_str);
+            }
+        }
+    }
+
+    identifiers
 }
 
 pub(crate) fn deserialize_graph_entities<'de, D>(

@@ -612,6 +612,7 @@
             background: var(--bg-panel);
             border-top: 1px solid var(--border);
             display: flex;
+            align-items: flex-end;
             gap: 0.75rem;
         }
         input[type="text"], input[type="password"], textarea, select {
@@ -630,6 +631,15 @@
             box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
         }
         textarea { resize: vertical; min-height: 120px; font-family: inherit; }
+        textarea.chat-input-textarea {
+            min-height: 44px;
+            max-height: 160px;
+            height: 44px;
+            resize: vertical;
+            line-height: 1.45;
+            padding: 0.6rem 0.85rem;
+            font-family: inherit;
+        }
         .btn {
             background: var(--accent);
             color: #fff;
@@ -649,6 +659,36 @@
             color: var(--text-muted);
         }
         .btn-secondary:hover { background: var(--bg-card); color: #fff; }
+        .btn-stop-subtle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.38rem;
+            background: rgba(30, 41, 59, 0.45);
+            border: 1px solid #475569;
+            color: #94a3b8;
+            border-radius: 0.5rem;
+            padding: 0.52rem 0.8rem;
+            height: 44px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s ease;
+        }
+        .btn-stop-subtle:hover {
+            background: rgba(239, 68, 68, 0.12);
+            border-color: rgba(248, 113, 113, 0.5);
+            color: #fca5a5;
+        }
+        .btn-stop-subtle .stop-square {
+            width: 9px;
+            height: 9px;
+            border-radius: 2px;
+            background: currentColor;
+            opacity: 0.85;
+            flex-shrink: 0;
+        }
 
         /* --- Modal Dialog (Scrollable Ingestion & LLM Settings) --- */
         .modal-backdrop {
@@ -735,6 +775,95 @@
             flex: 1;
             min-height: 0;
         }
+        /* --- Structured Settings Menu Layout --- */
+        .settings-layout {
+            display: grid;
+            grid-template-columns: 270px 1fr;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .settings-sidebar {
+            background: rgba(11, 15, 25, 0.75);
+            border-right: 1px solid var(--border);
+            padding: 1.25rem 0.9rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 0.75rem;
+            overflow-y: auto;
+        }
+        .settings-nav-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+        .settings-nav-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 0.6rem;
+            padding: 0.75rem 0.85rem;
+            color: #cbd5e1;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .settings-nav-btn:hover {
+            background: rgba(99, 102, 241, 0.1);
+            border-color: rgba(99, 102, 241, 0.28);
+            color: #f8fafc;
+        }
+        .settings-nav-btn.active {
+            background: rgba(99, 102, 241, 0.2);
+            border-color: var(--accent);
+            color: #ffffff;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.2);
+        }
+        .settings-nav-icon {
+            font-size: 1.2rem;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .settings-nav-text {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            min-width: 0;
+        }
+        .settings-nav-title {
+            font-size: 0.86rem;
+            font-weight: 600;
+            color: inherit;
+        }
+        .settings-nav-sub {
+            font-size: 0.71rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .settings-nav-btn.active .settings-nav-sub {
+            color: #c7d2fe;
+        }
+        .settings-content-pane {
+            padding: 1.5rem 2.2rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.15rem;
+            min-height: 0;
+        }
+        .settings-content-inner {
+            max-width: 880px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 1.1rem;
+        }
         /* Custom Dropzone */
         .dropzone-label {
             display: flex;
@@ -761,18 +890,33 @@
             display: flex;
             flex-direction: column;
             gap: 0.4rem;
-            max-height: 150px;
+            max-height: 210px;
             overflow-y: auto;
         }
         .file-pill {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 95px 28px;
             align-items: center;
+            gap: 0.75rem;
             background: var(--bg-input);
             border: 1px solid var(--border);
             border-radius: 0.45rem;
             padding: 0.45rem 0.75rem;
             font-size: 0.82rem;
+        }
+        .file-pill-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #f8fafc;
+        }
+        .file-pill-size {
+            text-align: right;
+            color: #94a3b8;
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.78rem;
+            white-space: nowrap;
         }
         .status-banner {
             padding: 0.65rem 0.9rem;

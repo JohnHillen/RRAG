@@ -40,6 +40,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     (CARGO_NET_OFFLINE=true trunk build --release || trunk build --release)
 
 # 1B. Build Axum backend (with persistent BuildKit cache for crates.io & target)
+COPY Showcase/mod.rs /workspace/Showcase/mod.rs
 COPY Showcase/Showcase_01_HR_Consulting/src /workspace/Showcase/Showcase_01_HR_Consulting/src
 COPY Showcase/Showcase_02_Spedition/src /workspace/Showcase/Showcase_02_Spedition/src
 COPY Showcase/Showcase_03_Webstore/src /workspace/Showcase/Showcase_03_Webstore/src
@@ -58,6 +59,8 @@ FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    openssh-client \
+    procps \
     poppler-utils \
     tesseract-ocr \
     tesseract-ocr-deu \

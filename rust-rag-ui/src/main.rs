@@ -13,6 +13,22 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use web_sys::{FormData, HtmlInputElement};
 
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = AbortController)]
+    #[derive(Clone, Debug)]
+    pub type JsAbortController;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(constructor, js_class = "AbortController")]
+    pub fn new() -> JsAbortController;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method, getter)]
+    pub fn signal(this: &JsAbortController) -> web_sys::AbortSignal;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    pub fn abort(this: &JsAbortController);
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphEntity {
     pub name: String,
@@ -225,6 +241,7 @@ const STORAGE_KEY_TOP_N: &str = "rust_rag_top_n_v1";
 const STORAGE_KEY_USE_RAG: &str = "rust_rag_use_rag_v1";
 const STORAGE_KEY_NUM_CTX: &str = "rust_rag_num_ctx_v1";
 const STORAGE_KEY_THINK: &str = "rust_rag_think_mode_v1";
+const STORAGE_KEY_TEMPERATURE: &str = "rust_rag_temperature_v1";
 const STORAGE_KEY_LLM_MODEL: &str = "rust_rag_llm_model_v1";
 const STORAGE_KEY_LLM_PROVIDER: &str = "rust_rag_llm_provider_v1";
 const STORAGE_KEY_LLM_URL: &str = "rust_rag_llm_url_v1";
@@ -366,6 +383,29 @@ fn save_num_ctx_to_storage(ctx: u64) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let _ = storage.set_item(STORAGE_KEY_NUM_CTX, &ctx.to_string());
+        }
+    }
+}
+
+fn load_temperature_from_storage() -> f32 {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(raw)) = storage.get_item(STORAGE_KEY_TEMPERATURE) {
+                if let Ok(val) = raw.parse::<f32>() {
+                    if (0.0..=2.0).contains(&val) {
+                        return val;
+                    }
+                }
+            }
+        }
+    }
+    0.2f32
+}
+
+fn save_temperature_to_storage(temp: f32) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(STORAGE_KEY_TEMPERATURE, &format!("{:.2}", temp));
         }
     }
 }
@@ -1013,6 +1053,78 @@ fn parse_category_and_title(raw_title: &str) -> (String, String) {
     ("General".to_string(), trimmed.to_string())
 }
 
+/// Returns (icon, view_button_label, view_tooltip, close_button_label) based on the document title's file extension.
+fn doc_format_labels(
+    doc_title: &str,
+    is_en: bool,
+) -> (&'static str, &'static str, &'static str, &'static str) {
+    let lower = doc_title.trim().to_lowercase();
+    if lower.ends_with(".pdf") {
+        if is_en {
+            ("📄", "📄 View PDF", "Open PDF document in viewer", "✕ Close PDF")
+        } else {
+            ("📄", "📄 PDF anzeigen", "PDF-Dokument im Viewer anzeigen", "✕ PDF schließen")
+        }
+    } else if lower.ends_with(".xml") {
+        if is_en {
+            ("📜", "📜 View XML", "Open XML document in viewer", "✕ Close XML")
+        } else {
+            ("📜", "📜 XML anzeigen", "XML-Dokument im Viewer anzeigen", "✕ XML schließen")
+        }
+    } else if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        if is_en {
+            ("📝", "📝 View Markdown", "Open Markdown document in viewer", "✕ Close Document")
+        } else {
+            ("📝", "📝 Markdown anzeigen", "Markdown-Dokument im Viewer anzeigen", "✕ Dokument schließen")
+        }
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        if is_en {
+            ("🌐", "🌐 View HTML", "Open HTML document in viewer", "✕ Close Document")
+        } else {
+            ("🌐", "🌐 HTML anzeigen", "HTML-Dokument im Viewer anzeigen", "✕ Dokument schließen")
+        }
+    } else if lower.ends_with(".txt") {
+        if is_en {
+            ("📃", "📃 View Text", "Open text document in viewer", "✕ Close Document")
+        } else {
+            ("📃", "📃 Text anzeigen", "Textdokument im Viewer anzeigen", "✕ Dokument schließen")
+        }
+    } else if lower.ends_with(".csv") || lower.ends_with(".json") {
+        if is_en {
+            ("📊", "📊 View File", "Open document in viewer", "✕ Close Document")
+        } else {
+            ("📊", "📊 Datei anzeigen", "Dokument im Viewer anzeigen", "✕ Dokument schließen")
+        }
+    } else if is_en {
+        ("📄", "📄 View Document", "Open document in viewer", "✕ Close Document")
+    } else {
+        ("📄", "📄 Dokument anzeigen", "Dokument im Viewer anzeigen", "✕ Dokument schließen")
+    }
+}
+
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(win) = web_sys::window() {
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+async fn read_browser_file_as_text(file: &web_sys::File) -> Option<String> {
+    let func = js_sys::Reflect::get(file.as_ref(), &wasm_bindgen::JsValue::from_str("text"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let promise = func
+        .call0(file.as_ref())
+        .ok()?
+        .dyn_into::<js_sys::Promise>()
+        .ok()?;
+    let val = wasm_bindgen_futures::JsFuture::from(promise).await.ok()?;
+    val.as_string()
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(|| view! { <App /> });
@@ -1063,14 +1175,22 @@ fn App() -> impl IntoView {
     let (top_n, set_top_n) = create_signal(load_top_n_from_storage());
     let (num_ctx_sig, set_num_ctx_sig) = create_signal(load_num_ctx_from_storage());
     let (think_mode_sig, set_think_mode_sig) = create_signal(load_think_from_storage());
+    let (temperature_sig, set_temperature_sig) = create_signal(load_temperature_from_storage());
+    let (open_rag_help, set_open_rag_help) = create_signal(None::<&'static str>);
     let (is_loading, set_is_loading) = create_signal(false);
+    let (chat_abort_gen, set_chat_abort_gen) = create_signal(0u64);
+    let chat_abort_ctrl = create_rw_signal(None::<JsAbortController>);
 
-    // --- Temporärer Chat-Anhang (📎 ohne Datenbank-Speicherung) ---
-    let (chat_attachment, set_chat_attachment) = create_signal(None::<AttachedChatDoc>);
+    // --- Temporäre Chat-Anhänge (📎 mehrere Dateien auch aus verschiedenen Ordnern ohne DB-Speicherung) ---
+    let (chat_attachments, set_chat_attachments) = create_signal(Vec::<AttachedChatDoc>::new());
     let (attachment_only, set_attachment_only) = create_signal(true);
     let (is_extracting_attachment, set_is_extracting_attachment) = create_signal(false);
     let (attachment_error, set_attachment_error) = create_signal(None::<String>);
     let chat_attach_input_ref = create_node_ref::<leptos::html::Input>();
+
+    // --- Chat-Eingabe-Historie (Pfeiltaste Hoch / Runter) ---
+    let (history_cursor, set_history_cursor) = create_signal(None::<usize>);
+    let (draft_before_history, set_draft_before_history) = create_signal(String::new());
 
     // --- Modal & Ingestion Signals ---
     let (show_ingest_modal, set_show_ingest_modal) = create_signal(false);
@@ -1085,8 +1205,13 @@ fn App() -> impl IntoView {
     let (selected_file_names, set_selected_file_names) = create_signal(Vec::<(String, String)>::new());
     let (selected_files, set_selected_files) = create_signal(Vec::<web_sys::File>::new());
     let (is_uploading, set_is_uploading) = create_signal(false);
+    let (upload_cancelled, set_upload_cancelled) = create_signal(false);
+    let upload_abort_ctrl = create_rw_signal(None::<JsAbortController>);
+    let (upload_progress_pct, set_upload_progress_pct) = create_signal(0.0f64);
+    let (upload_eta_text, set_upload_eta_text) = create_signal(String::new());
 
     let (doc_category, set_doc_category) = create_signal(String::new());
+    let (ingest_pipeline, set_ingest_pipeline) = create_signal("auto".to_string());
     let (replace_revision, set_replace_revision) = create_signal(true);
     let (extract_graph, set_extract_graph) = create_signal(false);
     let (stored_docs, set_stored_docs) = create_signal(Vec::<DocumentItem>::new());
@@ -1173,6 +1298,8 @@ fn App() -> impl IntoView {
 
     let (backend_info, set_backend_info) = create_signal("Verbinde...".to_string());
     let (show_llm_modal, set_show_llm_modal) = create_signal(false);
+    // Aktiver Menüpunkt im Einstellungs-Menü: "rag" | "llm" | "runpod" | "system"
+    let (settings_tab, set_settings_tab) = create_signal("rag".to_string());
     let (llm_provider_sig, set_llm_provider_sig) = create_signal(initial_llm_prov);
     let (llm_base_url_sig, set_llm_base_url_sig) = create_signal(initial_llm_url);
     let (llm_api_key_sig, set_llm_api_key_sig) = create_signal(String::new());
@@ -1183,6 +1310,41 @@ fn App() -> impl IntoView {
         create_signal(vec![initial_llm_model]);
     let (llm_config_status, set_llm_config_status) = create_signal(String::new());
     let (is_discovering_models, set_is_discovering_models) = create_signal(false);
+
+    // --- RunPod Cloud GPU Manager Signals ---
+    let (rp_phase, set_rp_phase) = create_signal("idle".to_string());
+    let (rp_message, set_rp_message) = create_signal(String::new());
+    let (rp_pod_id, set_rp_pod_id) = create_signal(None::<String>);
+    let (rp_pod_status, set_rp_pod_status) = create_signal(None::<String>);
+    let (rp_gpu_type, set_rp_gpu_type) = create_signal("NVIDIA A40".to_string());
+    let (rp_cost_hr, set_rp_cost_hr) = create_signal(None::<f64>);
+    let (rp_ssh_ep, set_rp_ssh_ep) = create_signal(None::<String>);
+    let (rp_tunnel_ok, set_rp_tunnel_ok) = create_signal(false);
+    let (rp_enable_llm, set_rp_enable_llm) = create_signal(true);
+    let (rp_llm_model, set_rp_llm_model) = create_signal("qwen3:8b".to_string());
+    let (rp_llm_ready, set_rp_llm_ready) = create_signal(false);
+    let (rp_enable_embed, set_rp_enable_embed) = create_signal(true);
+    let (rp_embed_ready, set_rp_embed_ready) = create_signal(false);
+    let (rp_has_api_key, set_rp_has_api_key) = create_signal(false);
+    let (rp_has_ssh_key, set_rp_has_ssh_key) = create_signal(false);
+    let (rp_has_passphrase, set_rp_has_passphrase) = create_signal(false);
+    let (rp_needs_passphrase, set_rp_needs_passphrase) = create_signal(false);
+    let (rp_api_key_input, set_rp_api_key_input) = create_signal(String::new());
+    let (rp_show_api_key, set_rp_show_api_key) = create_signal(false);
+    let (rp_ssh_key_input, set_rp_ssh_key_input) = create_signal(String::new());
+    let (rp_ssh_key_filename, set_rp_ssh_key_filename) = create_signal(String::new());
+    let (rp_ssh_pass_input, set_rp_ssh_pass_input) = create_signal(String::new());
+    let (rp_show_ssh_pass, set_rp_show_ssh_pass) = create_signal(false);
+    let (rp_polling, set_rp_polling) = create_signal(false);
+    let rp_ssh_file_input_ref = create_node_ref::<leptos::html::Input>();
+
+    // --- SurrealDB Backup (Import / Export) Signals ---
+    let (db_import_file, set_db_import_file) = create_signal(None::<web_sys::File>);
+    let (db_import_file_label, set_db_import_file_label) = create_signal(String::new());
+    let (db_import_mode, set_db_import_mode) = create_signal("merge".to_string());
+    let (is_importing_db, set_is_importing_db) = create_signal(false);
+    let (db_backup_status, set_db_backup_status) = create_signal(String::new());
+    let db_import_input_ref = create_node_ref::<leptos::html::Input>();
 
     let load_llm_config = move || {
         spawn_local(async move {
@@ -1208,25 +1370,28 @@ fn App() -> impl IntoView {
                         models.insert(0, model.clone());
                     }
 
-                    // Check if local storage has a preference that differs from server default (e.g. after container recreate)
+                    // If server is currently running a RunPod tunnel (:11435), always use the server's active RunPod LLM
                     let current_storage_model = load_llm_pref_from_storage();
-                    let (eff_prov, eff_url, eff_mod) = match current_storage_model {
-                        Some((p, u, m)) if m != model => {
-                            // Automatically sync back to server so the server uses the user's preferred model
-                            let payload = serde_json::json!({
-                                "llm_provider": p,
-                                "llm_base_url": u,
-                                "llm_model": m
-                            });
-                            let _ = Request::post("/v1/llm/config")
-                                .header("Content-Type", "application/json")
-                                .body(payload.to_string())
-                                .unwrap()
-                                .send()
-                                .await;
-                            (p, u, m)
+                    let (eff_prov, eff_url, eff_mod) = if base_url.contains(":11435") {
+                        (provider, base_url, model)
+                    } else {
+                        match current_storage_model {
+                            Some((p, u, m)) if m != model && !u.contains(":11435") => {
+                                let payload = serde_json::json!({
+                                    "llm_provider": p,
+                                    "llm_base_url": u,
+                                    "llm_model": m
+                                });
+                                let _ = Request::post("/v1/llm/config")
+                                    .header("Content-Type", "application/json")
+                                    .body(payload.to_string())
+                                    .unwrap()
+                                    .send()
+                                    .await;
+                                (p, u, m)
+                            }
+                            _ => (provider, base_url, model),
                         }
-                        _ => (provider, base_url, model),
                     };
 
                     if !models.contains(&eff_mod) {
@@ -1244,22 +1409,97 @@ fn App() -> impl IntoView {
         });
     };
 
+    let apply_runpod_json = move |json: &serde_json::Value| -> String {
+        let phase = json["phase"].as_str().unwrap_or("idle").to_string();
+        let msg = json["message"].as_str().unwrap_or("").to_string();
+        set_rp_phase.set(phase.clone());
+        set_rp_message.set(msg);
+        set_rp_pod_id.set(json["pod_id"].as_str().map(|s| s.to_string()));
+        set_rp_pod_status.set(json["pod_status"].as_str().map(|s| s.to_string()));
+        if let Some(g) = json["gpu_type"].as_str().filter(|s| !s.is_empty()) {
+            set_rp_gpu_type.set(g.to_string());
+        }
+        set_rp_cost_hr.set(json["cost_per_hr"].as_f64());
+        set_rp_ssh_ep.set(json["ssh_endpoint"].as_str().map(|s| s.to_string()));
+        set_rp_tunnel_ok.set(json["tunnel_connected"].as_bool().unwrap_or(false));
+        if let Some(el) = json["enable_llm"].as_bool() {
+            set_rp_enable_llm.set(el);
+        }
+        if let Some(m) = json["llm_model"].as_str().filter(|s| !s.is_empty()) {
+            set_rp_llm_model.set(m.to_string());
+        }
+        set_rp_llm_ready.set(json["llm_ready"].as_bool().unwrap_or(false));
+        if let Some(ee) = json["enable_embedding"].as_bool() {
+            set_rp_enable_embed.set(ee);
+        }
+        set_rp_embed_ready.set(json["embed_ready"].as_bool().unwrap_or(false));
+        set_rp_has_api_key.set(json["has_api_key"].as_bool().unwrap_or(false));
+        set_rp_has_ssh_key.set(json["has_ssh_key"].as_bool().unwrap_or(false));
+        set_rp_has_passphrase.set(json["has_ssh_passphrase"].as_bool().unwrap_or(false));
+        set_rp_needs_passphrase.set(json["ssh_key_needs_passphrase"].as_bool().unwrap_or(false));
+
+        if let Some(act_mod) = json["active_llm_model"].as_str().filter(|s| !s.is_empty()) {
+            set_llm_model_sig.set(act_mod.to_string());
+        }
+        if let Some(act_url) = json["active_llm_url"].as_str().filter(|s| !s.is_empty()) {
+            set_llm_base_url_sig.set(act_url.to_string());
+        }
+        phase
+    };
+
+    let refresh_runpod_status = move || {
+        spawn_local(async move {
+            if let Ok(resp) = Request::get("/v1/runpod/status").send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let phase = apply_runpod_json(&json);
+                    let is_busy = phase == "deploying"
+                        || phase == "waiting_ssh"
+                        || phase == "loading_models"
+                        || phase == "stopping";
+                    if is_busy && !rp_polling.get_untracked() {
+                        set_rp_polling.set(true);
+                        loop {
+                            sleep_ms(2500).await;
+                            let Ok(r2) = Request::get("/v1/runpod/status").send().await else {
+                                break;
+                            };
+                            let Ok(j2) = r2.json::<serde_json::Value>().await else {
+                                break;
+                            };
+                            let p2 = apply_runpod_json(&j2);
+                            if p2 != "deploying"
+                                && p2 != "waiting_ssh"
+                                && p2 != "loading_models"
+                                && p2 != "stopping"
+                            {
+                                load_llm_config();
+                                break;
+                            }
+                        }
+                        set_rp_polling.set(false);
+                    }
+                }
+            }
+        });
+    };
+
     create_effect(move |_| {
         load_llm_config();
+        refresh_runpod_status();
         refresh_documents();
         refresh_crm_employees();
         refresh_fleet_data();
         refresh_webstore_data();
     });
 
-    // --- Handler: Dateiauswahl (Dateien oder ganzer Ordner) geändert ---
+    // --- Handler: Dateiauswahl (Dateien oder ganzer Ordner) geändert — akkumuliert über mehrere Ordner hinweg ---
     let on_files_selected = move |ev: leptos::ev::Event| {
         let Some(target) = ev.target() else { return };
         let Ok(dom_input) = target.dyn_into::<HtmlInputElement>() else { return };
         let Some(files) = dom_input.files() else { return };
 
-        let mut list = Vec::new();
-        let mut file_vec = Vec::new();
+        let mut list = selected_file_names.get_untracked();
+        let mut file_vec = selected_files.get_untracked();
         for i in 0..files.length() {
             if let Some(f) = files.get(i) {
                 let name = f.name();
@@ -1274,10 +1514,16 @@ fn App() -> impl IntoView {
                 } else {
                     name
                 };
-                list.push((display_name, format!("{} KB", size_kb)));
-                file_vec.push(f);
+                if let Some(existing_idx) = list.iter().position(|(existing_name, _)| existing_name == &display_name) {
+                    list[existing_idx] = (display_name, format!("{} KB", size_kb));
+                    file_vec[existing_idx] = f;
+                } else {
+                    list.push((display_name, format!("{} KB", size_kb)));
+                    file_vec.push(f);
+                }
             }
         }
+        dom_input.set_value("");
         set_selected_file_names.set(list);
         set_selected_files.set(file_vec);
         set_ingest_status.set(String::new());
@@ -1296,14 +1542,32 @@ fn App() -> impl IntoView {
             return;
         }
 
+        set_upload_cancelled.set(false);
         set_is_uploading.set(true);
+        set_upload_progress_pct.set(0.0);
         let category_val = doc_category.get();
+        let pipeline_val = ingest_pipeline.get();
         let replace_rev_val = replace_revision.get();
         let extract_graph_val = extract_graph.get();
         let is_en_val = is_en();
 
         spawn_local(async move {
             let total_files = file_vec.len();
+            let file_kbs: Vec<f64> = file_vec
+                .iter()
+                .map(|f| {
+                    let blob: &web_sys::Blob = f.as_ref();
+                    (blob.size() / 1024.0).max(1.0)
+                })
+                .collect();
+            let total_kb: f64 = file_kbs.iter().sum::<f64>().max(1.0);
+            let mut completed_kb: f64 = 0.0;
+            // Empirical baseline on local Apple Silicon Metal BGE-M3 (~320 ms / KB for XML statutes)
+            let mut ms_per_kb: f64 = 320.0;
+            let mut measured_embed_kb: f64 = 0.0;
+            let mut measured_embed_ms: f64 = 0.0;
+            let upload_start_ms = js_sys::Date::now();
+
             let mut success_files = 0usize;
             let mut skipped_files = 0usize;
             let mut replaced_files = 0usize;
@@ -1313,6 +1577,43 @@ fn App() -> impl IntoView {
             let mut error_messages: Vec<String> = Vec::new();
 
             for (idx, file) in file_vec.into_iter().enumerate() {
+                if upload_cancelled.get_untracked() {
+                    break;
+                }
+                let this_kb = file_kbs.get(idx).copied().unwrap_or(10.0);
+                let remaining_kb = (total_kb - completed_kb).max(0.0);
+                let est_rem_sec = ((remaining_kb * ms_per_kb) / 1000.0).round() as u64;
+                let elapsed_sec = ((js_sys::Date::now() - upload_start_ms) / 1000.0).max(0.0) as u64;
+                let pct = ((completed_kb / total_kb) * 100.0).clamp(0.0, 99.0);
+                set_upload_progress_pct.set(pct);
+                set_upload_eta_text.set(if is_en_val {
+                    format!(
+                        "File {}/{} ({:.0}/{:.0} KB · {:.0}%) · Elapsed: {:02}:{:02} · Est. remaining: ~{:02}:{:02}",
+                        idx + 1,
+                        total_files,
+                        completed_kb,
+                        total_kb,
+                        pct,
+                        elapsed_sec / 60,
+                        elapsed_sec % 60,
+                        est_rem_sec / 60,
+                        est_rem_sec % 60
+                    )
+                } else {
+                    format!(
+                        "Datei {}/{} ({:.0}/{:.0} KB · {:.0}%) · Verstrichen: {:02}:{:02} · Geschätzte Restzeit: ~{:02}:{:02} Min.",
+                        idx + 1,
+                        total_files,
+                        completed_kb,
+                        total_kb,
+                        pct,
+                        elapsed_sec / 60,
+                        elapsed_sec % 60,
+                        est_rem_sec / 60,
+                        est_rem_sec % 60
+                    )
+                });
+                let file_start_ms = js_sys::Date::now();
                 let filename = file.name();
                 let rel_path = get_file_relative_path(&file);
                 let auto_folder = extract_category_from_path(&rel_path);
@@ -1356,6 +1657,7 @@ fn App() -> impl IntoView {
                 if !effective_category.is_empty() {
                     let _ = form_data.append_with_str("category", &effective_category);
                 }
+                let _ = form_data.append_with_str("pipeline", &pipeline_val);
                 let _ = form_data.append_with_str(
                     "replace_revision",
                     if replace_rev_val { "true" } else { "false" },
@@ -1366,7 +1668,12 @@ fn App() -> impl IntoView {
                 );
                 let _ = form_data.append_with_blob_and_filename("files", &file, &filename);
 
+                let ctrl = JsAbortController::new();
+                let signal = ctrl.signal();
+                upload_abort_ctrl.set(Some(ctrl));
+
                 match Request::post("/v1/ingest/file")
+                    .abort_signal(Some(&signal))
                     .body(form_data)
                     .unwrap()
                     .send()
@@ -1387,17 +1694,51 @@ fn App() -> impl IntoView {
                         } else {
                             total_chunks += chunks;
                             success_files += 1;
+                            let file_took_ms = (js_sys::Date::now() - file_start_ms).max(50.0);
+                            measured_embed_kb += this_kb;
+                            measured_embed_ms += file_took_ms;
+                            if measured_embed_kb >= 5.0 {
+                                ms_per_kb = (measured_embed_ms / measured_embed_kb).clamp(20.0, 2000.0);
+                            }
                         }
+                        completed_kb += this_kb;
                     }
                     Ok(resp) => {
+                        if upload_cancelled.get_untracked() {
+                            break;
+                        }
                         let err = resp.text().await.unwrap_or_default();
                         error_messages.push(format!("{}: {}", filename, err));
                     }
                     Err(e) => {
+                        if upload_cancelled.get_untracked() {
+                            break;
+                        }
                         let net_lbl = if is_en_val { "Network" } else { "Netzwerk" };
                         error_messages.push(format!("{} ({}: {})", filename, net_lbl, e));
                     }
                 }
+            }
+
+            upload_abort_ctrl.set(None);
+            set_upload_progress_pct.set(100.0);
+            set_upload_eta_text.set(String::new());
+
+            if upload_cancelled.get_untracked() {
+                set_ingest_status.set(if is_en_val {
+                    format!(
+                        "⏹️ Upload cancelled by user ({} file(s) indexed, {} chunks before cancellation).",
+                        success_files, total_chunks
+                    )
+                } else {
+                    format!(
+                        "⏹️ Upload vom Nutzer abgebrochen ({} Datei(en) bzw. {} Chunks bis zum Abbruch indexiert).",
+                        success_files, total_chunks
+                    )
+                });
+                refresh_documents();
+                set_is_uploading.set(false);
+                return;
             }
 
             let mut notes = Vec::new();
@@ -1480,6 +1821,10 @@ fn App() -> impl IntoView {
                 });
             }
 
+            if error_messages.is_empty() {
+                set_selected_file_names.set(Vec::new());
+                set_selected_files.set(Vec::new());
+            }
             refresh_documents();
             set_is_uploading.set(false);
         });
@@ -1592,56 +1937,77 @@ fn App() -> impl IntoView {
         });
     };
 
-    // --- Handler: Temporäre Datei (📎) im Chat-Fenster auswählen (nur im RAM, ohne DB-Speicherung) ---
+    // --- Handler: Temporäre Dateien (📎) im Chat-Fenster auswählen (akkumuliert mehrere Dateien auch aus unterschiedlichen Ordnern im RAM) ---
     let on_chat_attachment_selected = move |ev: leptos::ev::Event| {
         let Some(target) = ev.target() else { return };
         let Ok(dom_input) = target.dyn_into::<HtmlInputElement>() else { return };
         let Some(files) = dom_input.files() else { return };
-        let Some(file) = files.get(0) else { return };
+        if files.length() == 0 {
+            return;
+        }
 
-        let filename = file.name();
+        let mut picked_files = Vec::new();
+        for i in 0..files.length() {
+            if let Some(f) = files.get(i) {
+                picked_files.push(f);
+            }
+        }
+        if picked_files.is_empty() {
+            return;
+        }
+
         set_is_extracting_attachment.set(true);
         set_attachment_error.set(None);
 
         spawn_local(async move {
-            let form_data = FormData::new().unwrap();
-            let _ = form_data.append_with_blob_and_filename("file", &file, &filename);
+            for file in picked_files {
+                let filename = file.name();
+                let form_data = FormData::new().unwrap();
+                let _ = form_data.append_with_blob_and_filename("file", &file, &filename);
 
-            match Request::post("/v1/extract")
-                .body(form_data)
-                .unwrap()
-                .send()
-                .await
-            {
-                Ok(resp) if resp.ok() => {
-                    let data: serde_json::Value = resp.json().await.unwrap_or_default();
-                    let text = data["text"].as_str().unwrap_or_default().to_string();
-                    let char_count = data["char_count"].as_u64().unwrap_or(0) as usize;
-                    let chunk_count = data["chunk_count"].as_u64().unwrap_or(0) as usize;
-                    set_chat_attachment.set(Some(AttachedChatDoc {
-                        filename,
-                        text,
-                        char_count,
-                        chunk_count,
-                    }));
-                    set_attachment_only.set(true);
-                }
-                Ok(resp) => {
-                    let err = resp.text().await.unwrap_or_default();
-                    let msg = if is_en() {
-                        format!("Error reading '{}': {}", filename, err)
-                    } else {
-                        format!("Fehler beim Lesen von '{}': {}", filename, err)
-                    };
-                    set_attachment_error.set(Some(msg));
-                }
-                Err(e) => {
-                    let msg = if is_en() {
-                        format!("Network error: {}", e)
-                    } else {
-                        format!("Netzwerkfehler: {}", e)
-                    };
-                    set_attachment_error.set(Some(msg));
+                match Request::post("/v1/extract")
+                    .body(form_data)
+                    .unwrap()
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.ok() => {
+                        let data: serde_json::Value = resp.json().await.unwrap_or_default();
+                        let text = data["text"].as_str().unwrap_or_default().to_string();
+                        let char_count = data["char_count"].as_u64().unwrap_or(0) as usize;
+                        let chunk_count = data["chunk_count"].as_u64().unwrap_or(0) as usize;
+                        let new_doc = AttachedChatDoc {
+                            filename: filename.clone(),
+                            text,
+                            char_count,
+                            chunk_count,
+                        };
+                        set_chat_attachments.update(|list| {
+                            if let Some(existing) = list.iter_mut().find(|d| d.filename == filename) {
+                                *existing = new_doc;
+                            } else {
+                                list.push(new_doc);
+                            }
+                        });
+                        set_attachment_only.set(true);
+                    }
+                    Ok(resp) => {
+                        let err = resp.text().await.unwrap_or_default();
+                        let msg = if is_en() {
+                            format!("Error reading '{}': {}", filename, err)
+                        } else {
+                            format!("Fehler beim Lesen von '{}': {}", filename, err)
+                        };
+                        set_attachment_error.set(Some(msg));
+                    }
+                    Err(e) => {
+                        let msg = if is_en() {
+                            format!("Network error: {}", e)
+                        } else {
+                            format!("Netzwerkfehler: {}", e)
+                        };
+                        set_attachment_error.set(Some(msg));
+                    }
                 }
             }
             if let Some(el) = chat_attach_input_ref.get() {
@@ -1651,6 +2017,61 @@ fn App() -> impl IntoView {
         });
     };
 
+    // --- Handler: Laufenden Upload abbrechen ---
+    let cancel_upload = move |_: leptos::ev::MouseEvent| {
+        set_upload_cancelled.set(true);
+        if let Some(ctrl) = upload_abort_ctrl.get_untracked() {
+            ctrl.abort();
+        }
+        upload_abort_ctrl.set(None);
+    };
+
+    // --- Handler: Laufende Chat-Antwort / Prompt abbrechen ---
+    let stop_chat_generation = move || {
+        if !is_loading.get_untracked() {
+            return;
+        }
+        set_chat_abort_gen.update(|g| *g = g.wrapping_add(1));
+        if let Some(ctrl) = chat_abort_ctrl.get_untracked() {
+            ctrl.abort();
+        }
+        chat_abort_ctrl.set(None);
+
+        let is_en_now = is_en();
+        set_messages.update(|msgs| {
+            if let Some(last) = msgs.last_mut() {
+                if last.role == "assistant" {
+                    let cur = last.content.get_untracked();
+                    let is_status_placeholder = cur.starts_with("🔍 ")
+                        || cur.starts_with("📎 ")
+                        || cur.starts_with("✍️ ");
+                    if is_status_placeholder || cur.trim().is_empty() {
+                        last.content.set(if is_en_now {
+                            "⏹️ Generation stopped by user.".to_string()
+                        } else {
+                            "⏹️ Antwortgenerierung vom Nutzer abgebrochen.".to_string()
+                        });
+                    } else {
+                        let mut next_txt = cur;
+                        if next_txt.contains("<think>") && !next_txt.contains("</think>") {
+                            next_txt.push_str("\n</think>\n\n");
+                        } else {
+                            next_txt.push_str("\n\n");
+                        }
+                        next_txt.push_str(if is_en_now {
+                            "*(⏹️ Stopped by user)*"
+                        } else {
+                            "*(⏹️ Vom Nutzer abgebrochen)*"
+                        });
+                        last.content.set(next_txt);
+                    }
+                }
+            }
+        });
+        persist_current_chat(None);
+        set_is_loading.set(false);
+    };
+
     // --- Handler: Chat-Frage absenden (Echtzeit-Streaming) ---
     let send_message = move || {
         let prompt = user_input.get();
@@ -1658,23 +2079,34 @@ fn App() -> impl IntoView {
             return;
         }
 
+        let my_gen = chat_abort_gen.get_untracked().wrapping_add(1);
+        set_chat_abort_gen.set(my_gen);
+
         set_user_input.set(String::new());
+        set_history_cursor.set(None);
+        set_draft_before_history.set(String::new());
         set_is_loading.set(true);
 
-        let active_attachment = chat_attachment.get();
-        let attach_only_mode = active_attachment.is_some() && attachment_only.get();
+        let active_attachments = chat_attachments.get();
+        let has_attachments = !active_attachments.is_empty();
+        let attach_only_mode = has_attachments && attachment_only.get();
 
         let user_msg_id = next_msg_id.get();
         let assistant_msg_id = user_msg_id + 1;
         next_msg_id.set(assistant_msg_id + 1);
 
-        let displayed_user_prompt = if let Some(ref att) = active_attachment {
+        let displayed_user_prompt = if has_attachments {
+            let names = active_attachments
+                .iter()
+                .map(|a| a.filename.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             let mode_badge = if is_en() {
                 if attach_only_mode { "Attachment only" } else { "Attachment + DB" }
             } else {
                 if attach_only_mode { "Nur Anhang" } else { "Anhang + DB" }
             };
-            format!("📎 [{} · {}] {}", att.filename, mode_badge, prompt)
+            format!("📎 [{} · {}] {}", names, mode_badge, prompt)
         } else {
             prompt.clone()
         };
@@ -1711,14 +2143,14 @@ fn App() -> impl IntoView {
         }
 
         let initial_status_msg = if is_en() {
-            if active_attachment.is_some() && attach_only_mode {
-                "📎 Analyzing attached file in RAM...".to_string()
+            if has_attachments && attach_only_mode {
+                format!("📎 Analyzing {} attached file(s) in RAM...", active_attachments.len())
             } else {
                 "🔍 Searching in SurrealDB & starting reranking...".to_string()
             }
         } else {
-            if active_attachment.is_some() && attach_only_mode {
-                "📎 Analysiere angehängte Datei im Arbeitsspeicher...".to_string()
+            if has_attachments && attach_only_mode {
+                format!("📎 Analysiere {} angehängte Datei(en) im Arbeitsspeicher...", active_attachments.len())
             } else {
                 "🔍 Suche in SurrealDB & starte Reranking...".to_string()
             }
@@ -1742,18 +2174,38 @@ fn App() -> impl IntoView {
         let k = top_n.get();
         let current_ctx = num_ctx_sig.get();
         let current_think = think_mode_sig.get();
+        let current_temp = temperature_sig.get();
         let active_llm_model = llm_model_sig.get();
 
         spawn_local(async move {
-            let attachment_json = active_attachment.map(|att| {
-                serde_json::json!({
+            let attachment_json = if active_attachments.is_empty() {
+                None
+            } else if active_attachments.len() == 1 {
+                let att = &active_attachments[0];
+                Some(serde_json::json!({
                     "filename": att.filename,
                     "text": att.text
-                })
-            });
+                }))
+            } else {
+                let combined_filenames = active_attachments
+                    .iter()
+                    .map(|a| a.filename.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let combined_text = active_attachments
+                    .iter()
+                    .map(|a| format!("# {}\n\n{}", a.filename, a.text))
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n");
+                Some(serde_json::json!({
+                    "filename": combined_filenames,
+                    "text": combined_text
+                }))
+            };
 
             let body = serde_json::json!({
                 "model": active_llm_model,
+                "temperature": current_temp,
                 "use_rag": rag_enabled,
                 "reranker": selected_reranker,
                 "top_n": k,
@@ -1764,7 +2216,12 @@ fn App() -> impl IntoView {
                 "messages": history_payload
             });
 
+            let ctrl = JsAbortController::new();
+            let signal = ctrl.signal();
+            chat_abort_ctrl.set(Some(ctrl));
+
             match Request::post("/v1/chat/stream")
+                .abort_signal(Some(&signal))
                 .header("Content-Type", "application/json")
                 .body(body.to_string())
                 .unwrap()
@@ -1772,6 +2229,9 @@ fn App() -> impl IntoView {
                 .await
             {
                 Ok(resp) if resp.ok() => {
+                    if chat_abort_gen.get_untracked() != my_gen {
+                        return;
+                    }
                     if let Some(body_stream) = resp.body() {
                         let reader: web_sys::ReadableStreamDefaultReader =
                             body_stream.get_reader().unchecked_into();
@@ -1781,12 +2241,20 @@ fn App() -> impl IntoView {
                         let mut base_metrics_str = String::new();
 
                         loop {
+                            if chat_abort_gen.get_untracked() != my_gen {
+                                let _ = reader.cancel();
+                                return;
+                            }
                             let read_promise = reader.read();
                             let Ok(js_result) =
                                 wasm_bindgen_futures::JsFuture::from(read_promise).await
                             else {
                                 break;
                             };
+                            if chat_abort_gen.get_untracked() != my_gen {
+                                let _ = reader.cancel();
+                                return;
+                            }
 
                             let done = js_sys::Reflect::get(&js_result, &"done".into())
                                 .ok()
@@ -1912,15 +2380,24 @@ fn App() -> impl IntoView {
                     }
                 }
                 Ok(resp) => {
+                    if chat_abort_gen.get_untracked() != my_gen {
+                        return;
+                    }
                     let err_txt = resp.text().await.unwrap_or_default();
                     assistant_content.set(format!("❌ Fehler vom Server: {}", err_txt));
                 }
                 Err(e) => {
+                    if chat_abort_gen.get_untracked() != my_gen {
+                        return;
+                    }
                     assistant_content.set(format!("❌ Verbindungsfehler: {}", e));
                 }
             }
-            persist_current_chat(None);
-            set_is_loading.set(false);
+            if chat_abort_gen.get_untracked() == my_gen {
+                chat_abort_ctrl.set(None);
+                persist_current_chat(None);
+                set_is_loading.set(false);
+            }
         });
     };
 
@@ -1946,7 +2423,8 @@ fn App() -> impl IntoView {
         });
         set_active_session_id.set(new_id);
         set_messages.set(ui_msgs);
-        set_chat_attachment.set(None);
+        set_chat_attachments.set(Vec::new());
+        set_history_cursor.set(None);
         set_attachment_error.set(None);
     };
 
@@ -1961,7 +2439,8 @@ fn App() -> impl IntoView {
             let ui_msgs = stored_to_ui_messages(&target_sess.messages, next_msg_id);
             set_active_session_id.set(target_id);
             set_messages.set(ui_msgs);
-            set_chat_attachment.set(None);
+            set_chat_attachments.set(Vec::new());
+            set_history_cursor.set(None);
             set_attachment_error.set(None);
         }
     };
@@ -1991,7 +2470,8 @@ fn App() -> impl IntoView {
             let ui_msgs = stored_to_ui_messages(&next_active.messages, next_msg_id);
             set_active_session_id.set(next_active.id);
             set_messages.set(ui_msgs);
-            set_chat_attachment.set(None);
+            set_chat_attachments.set(Vec::new());
+            set_history_cursor.set(None);
             set_attachment_error.set(None);
         }
 
@@ -2080,7 +2560,8 @@ fn App() -> impl IntoView {
                                     }
                                     let clear_id = next_msg_id.get();
                                     next_msg_id.set(clear_id + 1);
-                                    set_chat_attachment.set(None);
+                                    set_chat_attachments.set(Vec::new());
+                                    set_history_cursor.set(None);
                                     set_attachment_error.set(None);
                                     let cleared_txt = if is_en() {
                                         "Chat history cleared. Ask your knowledge base a new question!".to_string()
@@ -2299,7 +2780,7 @@ fn App() -> impl IntoView {
                             <span class="icon-caption">{move || if is_en() { "Docs" } else { "Dokumente" }}</span>
                         </button>
 
-                        {move || (!crm_employees.get().is_empty() || !fleet_vehicles.get().is_empty()).then(|| view! {
+                        {move || (!crm_employees.get().is_empty() || !fleet_vehicles.get().is_empty() || webstore_counts.get().0 > 0).then(|| view! {
                             <button
                                 class="sidebar-icon-btn"
                                 title=move || if is_en() { "Active Showcase SQL Database" } else { "Aktive Showcase SQL-Datenbank" }
@@ -2307,10 +2788,13 @@ fn App() -> impl IntoView {
                                     set_ingest_status.set(String::new());
                                     refresh_crm_employees();
                                     refresh_fleet_data();
+                                    refresh_webstore_data();
                                     if !fleet_vehicles.get_untracked().is_empty() {
                                         set_modal_tab.set("fleet".to_string());
                                     } else if !crm_employees.get_untracked().is_empty() {
                                         set_modal_tab.set("crm".to_string());
+                                    } else if webstore_counts.get_untracked().0 > 0 {
+                                        set_modal_tab.set("webstore".to_string());
                                     } else {
                                         set_modal_tab.set("docs".to_string());
                                     }
@@ -2324,9 +2808,10 @@ fn App() -> impl IntoView {
 
                         <button
                             class="sidebar-icon-btn"
-                            title=move || if is_en() { "Settings (Language, RAG, Reranker, LLM & Cloud)" } else { "Einstellungen (Sprache, RAG, Reranker, LLM & Cloud)" }
+                            title=move || if is_en() { "Settings (RAG, LLM, RunPod GPU & System)" } else { "Einstellungen (RAG, LLM, RunPod GPU & System)" }
                             on:click=move |_| {
                                 set_llm_config_status.set(String::new());
+                                refresh_runpod_status();
                                 set_show_llm_modal.set(true);
                             }
                         >
@@ -2360,50 +2845,25 @@ fn App() -> impl IntoView {
                     </div>
 
                     <div style="display: flex; align-items: center; gap: 0.55rem; flex-shrink: 0; flex-wrap: wrap;">
-                        // --- Aktiver Showcase Indikator im Header ---
-                        <button
-                            type="button"
-                            style=move || {
-                                let (wp_cnt, _, _) = webstore_counts.get();
-                                if !fleet_vehicles.get().is_empty() {
+                        // --- Aktiver Showcase Indikator im Header (nur sichtbar, wenn ein Showcase geladen ist) ---
+                        {move || {
+                            let v_cnt = fleet_vehicles.get().len();
+                            let t_cnt = fleet_tours.get().len();
+                            let e_cnt = crm_employees.get().len();
+                            let (wp_cnt, ws_cnt, _) = webstore_counts.get();
+                            let d_cnt = stored_docs.get().len();
+                            let is_showcase_active = v_cnt > 0 || e_cnt > 0 || wp_cnt > 0;
+
+                            is_showcase_active.then(|| {
+                                let btn_style = if v_cnt > 0 {
                                     "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(16, 185, 129, 0.16); border: 1px solid #10b981; color: #6ee7b7; cursor: pointer;"
-                                } else if !crm_employees.get().is_empty() {
+                                } else if e_cnt > 0 {
                                     "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(99, 102, 241, 0.18); border: 1px solid #818cf8; color: #c7d2fe; cursor: pointer;"
-                                } else if wp_cnt > 0 {
+                                } else {
                                     "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(245, 158, 11, 0.18); border: 1px solid #f59e0b; color: #fde68a; cursor: pointer;"
-                                } else {
-                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 600; display: flex; align-items: center; gap: 0.45rem; border-radius: 999px; background: rgba(30, 41, 59, 0.7); border: 1px solid #475569; color: #94a3b8; cursor: pointer;"
-                                }
-                            }
-                            title=move || if is_en() {
-                                "Active Showcase in SurrealDB (click to open database explorer)"
-                            } else {
-                                "Aktives Showcase in SurrealDB (Klicken, um die Datenbank-Ansicht zu öffnen)"
-                            }
-                            on:click=move |_| {
-                                set_ingest_status.set(String::new());
-                                refresh_documents();
-                                refresh_crm_employees();
-                                refresh_fleet_data();
-                                refresh_webstore_data();
-                                if !fleet_vehicles.get_untracked().is_empty() {
-                                    set_modal_tab.set("fleet".to_string());
-                                } else if !crm_employees.get_untracked().is_empty() {
-                                    set_modal_tab.set("crm".to_string());
-                                } else {
-                                    set_modal_tab.set("docs".to_string());
-                                }
-                                set_is_modal_fullscreen.set(true);
-                                set_show_ingest_modal.set(true);
-                            }
-                        >
-                            {move || {
-                                let v_cnt = fleet_vehicles.get().len();
-                                let t_cnt = fleet_tours.get().len();
-                                let e_cnt = crm_employees.get().len();
-                                let (wp_cnt, ws_cnt, _) = webstore_counts.get();
-                                let d_cnt = stored_docs.get().len();
-                                if v_cnt > 0 {
+                                };
+
+                                let label = if v_cnt > 0 {
                                     if is_en() {
                                         format!("🚛 Showcase 02: Spedition ({} Trucks · {} Tours · {} PDFs)", v_cnt, t_cnt, d_cnt)
                                     } else {
@@ -2415,19 +2875,80 @@ fn App() -> impl IntoView {
                                     } else {
                                         format!("🏢 Showcase 01: HR & Consulting ({} Mitarbeiter · {} PDFs)", e_cnt, d_cnt)
                                     }
-                                } else if wp_cnt > 0 {
-                                    if is_en() {
-                                        format!("🛒 Showcase 03: Webstore Multi-DB ({} Products · {} Sales · {} PDFs)", wp_cnt, ws_cnt, d_cnt)
-                                    } else {
-                                        format!("🛒 Showcase 03: Webstore Multi-DB ({} Artikel · {} Verkäufe · {} PDFs)", wp_cnt, ws_cnt, d_cnt)
-                                    }
                                 } else if is_en() {
-                                    format!("⚪ No Showcase active ({} Docs)", d_cnt)
+                                    format!("🛒 Showcase 03: Webstore Multi-DB ({} Products · {} Sales · {} PDFs)", wp_cnt, ws_cnt, d_cnt)
                                 } else {
-                                    format!("⚪ Kein Showcase aktiv ({} Dok.)", d_cnt)
+                                    format!("🛒 Showcase 03: Webstore Multi-DB ({} Artikel · {} Verkäufe · {} PDFs)", wp_cnt, ws_cnt, d_cnt)
+                                };
+
+                                view! {
+                                    <button
+                                        type="button"
+                                        style=btn_style
+                                        title=move || if is_en() {
+                                            "Active Showcase in SurrealDB (click to open database explorer)"
+                                        } else {
+                                            "Aktives Showcase in SurrealDB (Klicken, um die Datenbank-Ansicht zu öffnen)"
+                                        }
+                                        on:click=move |_| {
+                                            set_ingest_status.set(String::new());
+                                            refresh_documents();
+                                            refresh_crm_employees();
+                                            refresh_fleet_data();
+                                            refresh_webstore_data();
+                                            if !fleet_vehicles.get_untracked().is_empty() {
+                                                set_modal_tab.set("fleet".to_string());
+                                            } else if !crm_employees.get_untracked().is_empty() {
+                                                set_modal_tab.set("crm".to_string());
+                                            } else if webstore_counts.get_untracked().0 > 0 {
+                                                set_modal_tab.set("webstore".to_string());
+                                            } else {
+                                                set_modal_tab.set("docs".to_string());
+                                            }
+                                            set_is_modal_fullscreen.set(true);
+                                            set_show_ingest_modal.set(true);
+                                        }
+                                    >
+                                        {label}
+                                    </button>
                                 }
-                            }}
-                        </button>
+                            })
+                        }}
+
+                        {move || {
+                            let phase = rp_phase.get();
+                            (phase != "idle").then(|| {
+                                let is_running = phase == "running";
+                                let badge_style = if is_running {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.4rem; border-radius: 999px; background: rgba(16, 185, 129, 0.16); border: 1px solid #10b981; color: #6ee7b7; cursor: pointer;"
+                                } else if phase == "error" {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.4rem; border-radius: 999px; background: rgba(239, 68, 68, 0.16); border: 1px solid #ef4444; color: #fca5a5; cursor: pointer;"
+                                } else {
+                                    "padding: 0.35rem 0.78rem; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; gap: 0.4rem; border-radius: 999px; background: rgba(245, 158, 11, 0.18); border: 1px solid #f59e0b; color: #fde68a; cursor: pointer;"
+                                };
+                                let badge_label = if is_running {
+                                    format!("🚀 RunPod: {}", rp_gpu_type.get())
+                                } else if phase == "error" {
+                                    "🚀 RunPod: Fehler".to_string()
+                                } else {
+                                    "🚀 RunPod: Startet...".to_string()
+                                };
+                                view! {
+                                    <button
+                                        type="button"
+                                        style=badge_style
+                                        title=move || rp_message.get()
+                                        on:click=move |_| {
+                                            set_settings_tab.set("runpod".to_string());
+                                            refresh_runpod_status();
+                                            set_show_llm_modal.set(true);
+                                        }
+                                    >
+                                        {badge_label}
+                                    </button>
+                                }
+                            })
+                        }}
 
                         <button
                             class="btn btn-secondary"
@@ -2435,6 +2956,7 @@ fn App() -> impl IntoView {
                             title=move || if is_en() { "Click to configure RAG, Reranker, Context Window & LLM settings" } else { "Klicken, um RAG-, Reranker-, Kontextfenster- und LLM-Einstellungen anzupassen" }
                             on:click=move |_| {
                                 set_llm_config_status.set(String::new());
+                                refresh_runpod_status();
                                 set_show_llm_modal.set(true);
                             }
                         >
@@ -2467,7 +2989,7 @@ fn App() -> impl IntoView {
                                         _ => "16k",
                                     };
                                     let think_ico = if think_mode_sig.get() { "🧠" } else { "⚡" };
-                                    format!("{} · Top-{} · {} · {}", r, top_n.get(), ctx_str, think_ico)
+                                    format!("{} · Top-{} · {} · T={:.1} · {}", r, top_n.get(), ctx_str, temperature_sig.get(), think_ico)
                                 }}
                             </span>
                             <span>"⚙️"</span>
@@ -2629,19 +3151,21 @@ fn App() -> impl IntoView {
                                                                         {is_pdf_source.then(|| {
                                                                             let did = src_doc_id.clone();
                                                                             let dtitle = src_doc_title.clone();
+                                                                            let dtitle_for_lbl = src_doc_title.clone();
+                                                                            let dtitle_for_tip = src_doc_title.clone();
                                                                             view! {
                                                                                 <button
                                                                                     type="button"
                                                                                     class="btn btn-secondary"
                                                                                     style="padding:0.2rem 0.6rem; font-size:0.73rem; background:rgba(99,102,241,0.18); border-color:#6366f1; color:#c7d2fe;"
-                                                                                    title=move || if is_en() { "Open PDF document in viewer" } else { "PDF-Dokument im Viewer anzeigen" }
+                                                                                    title=move || doc_format_labels(&dtitle_for_tip, is_en()).2
                                                                                     on:click=move |ev| {
                                                                                         ev.stop_propagation();
                                                                                         ev.prevent_default();
                                                                                         set_viewing_pdf_doc.set(Some((did.clone(), dtitle.clone())));
                                                                                     }
                                                                                 >
-                                                                                    {move || if is_en() { "📄 View PDF" } else { "📄 PDF anzeigen" }}
+                                                                                    {move || doc_format_labels(&dtitle_for_lbl, is_en()).1}
                                                                                 </button>
                                                                             }
                                                                         })}
@@ -2743,41 +3267,87 @@ fn App() -> impl IntoView {
                                 </button>
                             </div>
                         }.into_view()
-                    } else if let Some(att) = chat_attachment.get() {
+                    } else if !chat_attachments.get().is_empty() {
+                        let current_list = chat_attachments.get();
+                        let total_chars: usize = current_list.iter().map(|d| d.char_count).sum();
+                        let total_chunks: usize = current_list.iter().map(|d| d.chunk_count).sum();
+                        let file_count = current_list.len();
                         view! {
-                            <div style="margin: 0 1.25rem 0.5rem 1.25rem; padding: 0.55rem 0.9rem; background: #0f172a; border: 1px solid #6366f1; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem; font-size: 0.82rem;">
-                                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                    <span class="badge" style="background: #4f46e5; color: #fff;">
-                                        {move || if is_en() { "📎 In-Memory Attachment" } else { "📎 Temporär im RAM" }}
-                                    </span>
-                                    <strong style="color: #f8fafc;">{att.filename}</strong>
-                                    <span style="color: #94a3b8;">
-                                        {move || if is_en() {
-                                            format!("({} chars · {} chunks · not in DB)", att.char_count, att.chunk_count)
-                                        } else {
-                                            format!("({} Zeichen · {} Chunks · nicht in DB)", att.char_count, att.chunk_count)
-                                        }}
-                                    </span>
+                            <div style="margin: 0 1.25rem 0.5rem 1.25rem; padding: 0.6rem 0.9rem; background: #0f172a; border: 1px solid #6366f1; border-radius: 8px; display: flex; flex-direction: column; gap: 0.55rem; font-size: 0.82rem;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
+                                    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                                        <span class="badge" style="background: #4f46e5; color: #fff;">
+                                            {move || if is_en() {
+                                                format!("📎 {} In-Memory Attachment(s)", file_count)
+                                            } else {
+                                                format!("📎 {} Datei(en) temporär im RAM", file_count)
+                                            }}
+                                        </span>
+                                        <span style="color: #94a3b8;">
+                                            {move || if is_en() {
+                                                format!("({} chars total · {} chunks · not in DB)", total_chars, total_chunks)
+                                            } else {
+                                                format!("({} Zeichen gesamt · {} Chunks · nicht in DB)", total_chars, total_chunks)
+                                            }}
+                                        </span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap;">
+                                        <button
+                                            class="btn btn-secondary"
+                                            style="padding: 0.25rem 0.6rem; font-size: 0.76rem; border-color: #6366f1; color: #c7d2fe;"
+                                            title=move || if is_en() { "Add more files from the same or another folder" } else { "Weitere Dateien (auch aus anderen Ordnern) hinzufügen" }
+                                            on:click=move |_| {
+                                                if let Some(input_el) = chat_attach_input_ref.get() {
+                                                    input_el.click();
+                                                }
+                                            }
+                                        >
+                                            {move || if is_en() { "+ 📎 Add file(s)" } else { "+ 📎 Weitere Datei(en)" }}
+                                        </button>
+                                        <select
+                                            style="width: 245px; padding: 0.28rem 0.5rem; font-size: 0.78rem;"
+                                            prop:value=move || if attachment_only.get() { "only" } else { "combine" }
+                                            on:change=move |ev| {
+                                                set_attachment_only.set(event_target_value(&ev) == "only");
+                                            }
+                                        >
+                                            <option value="only" selected>{move || if is_en() { "📄 Query attached file(s) only" } else { "📄 Nur angehängte Datei(en) befragen" }}</option>
+                                            <option value="combine">{move || if is_en() { "🔗 Combine attachment(s) + SurrealDB" } else { "🔗 Anhänge + SurrealDB kombinieren" }}</option>
+                                        </select>
+                                        <button
+                                            class="btn btn-secondary"
+                                            style="padding: 0.25rem 0.6rem; font-size: 0.76rem; background: #7f1d1d; color: #fecaca;"
+                                            title=move || if is_en() { "Remove all attachments from chat" } else { "Alle Anhänge aus dem Chat entfernen" }
+                                            on:click=move |_| set_chat_attachments.set(Vec::new())
+                                        >
+                                            {move || if is_en() { "✕ Remove all" } else { "✕ Alle entfernen" }}
+                                        </button>
+                                    </div>
                                 </div>
-                                <div style="display: flex; align-items: center; gap: 0.65rem;">
-                                    <select
-                                        style="width: 245px; padding: 0.28rem 0.5rem; font-size: 0.78rem;"
-                                        prop:value=move || if attachment_only.get() { "only" } else { "combine" }
-                                        on:change=move |ev| {
-                                            set_attachment_only.set(event_target_value(&ev) == "only");
+                                <div style="display: flex; flex-wrap: wrap; gap: 0.45rem;">
+                                    {current_list.into_iter().map(|att| {
+                                        let fname_for_remove = att.filename.clone();
+                                        view! {
+                                            <div style="display: inline-flex; align-items: center; gap: 0.4rem; background: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 0.22rem 0.55rem; font-size: 0.78rem;">
+                                                <span style="color: #f8fafc; font-weight: 600;">"📄 " {att.filename}</span>
+                                                <span style="color: #94a3b8; font-size: 0.72rem;">
+                                                    {format!("({} Chunks)", att.chunk_count)}
+                                                </span>
+                                                <button
+                                                    style="background: transparent; border: none; color: #fca5a5; cursor: pointer; font-size: 0.78rem; padding: 0 0.15rem;"
+                                                    title=move || if is_en() { "Remove this file" } else { "Diese Datei entfernen" }
+                                                    on:click=move |_| {
+                                                        let target_name = fname_for_remove.clone();
+                                                        set_chat_attachments.update(|list| {
+                                                            list.retain(|item| item.filename != target_name);
+                                                        });
+                                                    }
+                                                >
+                                                    "✕"
+                                                </button>
+                                            </div>
                                         }
-                                    >
-                                        <option value="only" selected>{move || if is_en() { "📄 Query this attachment only" } else { "📄 Nur diesen Anhang befragen" }}</option>
-                                        <option value="combine">{move || if is_en() { "🔗 Combine attachment + SurrealDB" } else { "🔗 Anhang + SurrealDB kombinieren" }}</option>
-                                    </select>
-                                    <button
-                                        class="btn btn-secondary"
-                                        style="padding: 0.25rem 0.6rem; font-size: 0.76rem; background: #7f1d1d; color: #fecaca;"
-                                        title=move || if is_en() { "Remove attachment from chat" } else { "Anhang aus dem Chat entfernen" }
-                                        on:click=move |_| set_chat_attachment.set(None)
-                                    >
-                                        {move || if is_en() { "✕ Remove attachment" } else { "✕ Anhang entfernen" }}
-                                    </button>
+                                    }).collect_view()}
                                 </div>
                             </div>
                         }.into_view()
@@ -2789,7 +3359,8 @@ fn App() -> impl IntoView {
                 <div class="chat-input-bar">
                     <input
                         type="file"
-                        accept=".pdf,.md,.txt,.html,.htm,.csv,.json"
+                        multiple=true
+                        accept=".pdf,.xml,.md,.txt,.html,.htm,.csv,.json"
                         style="display: none;"
                         node_ref=chat_attach_input_ref
                         on:change=on_chat_attachment_selected
@@ -2797,7 +3368,11 @@ fn App() -> impl IntoView {
                     <button
                         class="btn btn-secondary"
                         style="padding: 0.65rem 0.85rem; font-size: 1.05rem;"
-                        title="PDF oder Textdatei nur für diesen Chat anhängen (ohne Speicherung in SurrealDB)"
+                        title=move || if is_en() {
+                            "Attach PDF or text files for this chat (click multiple times to add files from different folders)"
+                        } else {
+                            "PDF- oder Textdateien für diesen Chat anhängen (mehrfach klickbar für Dateien aus verschiedenen Ordnern)"
+                        }
                         disabled=move || is_loading.get() || is_extracting_attachment.get()
                         on:click=move |_| {
                             if let Some(input_el) = chat_attach_input_ref.get() {
@@ -2807,36 +3382,129 @@ fn App() -> impl IntoView {
                     >
                         "📎"
                     </button>
-                    <input
-                        type="text"
+                    <textarea
+                        class="chat-input-textarea"
+                        rows="1"
                         placeholder=move || {
-                            if let Some(att) = chat_attachment.get() {
+                            let list = chat_attachments.get();
+                            if !list.is_empty() {
+                                let names = list.iter().map(|a| a.filename.as_str()).collect::<Vec<_>>().join(", ");
                                 if is_en() {
-                                    format!("Ask a question about '{}'...", att.filename)
+                                    format!("Ask a question about '{}' (Shift+Enter = new line, ↑/↓ = history)...", names)
                                 } else {
-                                    format!("Frage zu '{}' stellen...", att.filename)
+                                    format!("Frage zu '{}' stellen (Shift+Enter = Zeilenumbruch, ↑/↓ = Verlauf)...", names)
                                 }
                             } else if is_en() {
-                                "Ask your knowledge base & LLM a question (or attach a PDF via 📎)...".to_string()
+                                "Ask your knowledge base & LLM (Shift+Enter = new line, ↑/↓ = previous messages, 📎 = attach files)...".to_string()
                             } else {
-                                "Frage an deine Wissensdatenbank & LLM stellen (oder 📎 PDF anhängen)...".to_string()
+                                "Frage stellen (Shift+Enter = Zeilenumbruch, ↑/↓ = vorherige Nachrichten, 📎 = Anhänge hinzufügen)...".to_string()
                             }
                         }
                         prop:value=move || user_input.get()
-                        on:input=move |ev| set_user_input.set(event_target_value(&ev))
+                        on:input=move |ev| {
+                            set_user_input.set(event_target_value(&ev));
+                            set_history_cursor.set(None);
+                        }
                         on:keydown=move |ev| {
-                            if ev.key() == "Enter" {
+                            let key = ev.key();
+                            if key == "Enter" && !ev.shift_key() {
+                                ev.prevent_default();
                                 send_message();
+                            } else if key == "ArrowUp" && !ev.shift_key() && !ev.ctrl_key() && !ev.alt_key() {
+                                let current_text = user_input.get_untracked();
+                                // Pfeil-Hoch lädt vorherige Nachrichten, wenn wir schon im Verlauf blättern oder kein mehrzeiliger Entwurf aktiv ist
+                                if history_cursor.get_untracked().is_some() || !current_text.contains('\n') {
+                                    let user_prompts: Vec<String> = messages
+                                        .get_untracked()
+                                        .into_iter()
+                                        .filter(|m| m.role == "user")
+                                        .map(|m| {
+                                            let raw = m.content.get_untracked();
+                                            if raw.starts_with("📎 [") {
+                                                if let Some(end_bracket) = raw.find("] ") {
+                                                    raw[end_bracket + 2..].to_string()
+                                                } else {
+                                                    raw
+                                                }
+                                            } else {
+                                                raw
+                                            }
+                                        })
+                                        .filter(|s| !s.trim().is_empty())
+                                        .collect();
+
+                                    if !user_prompts.is_empty() {
+                                        ev.prevent_default();
+                                        let next_idx = match history_cursor.get_untracked() {
+                                            None => {
+                                                set_draft_before_history.set(current_text);
+                                                user_prompts.len() - 1
+                                            }
+                                            Some(0) => 0,
+                                            Some(idx) => idx.saturating_sub(1),
+                                        };
+                                        set_history_cursor.set(Some(next_idx));
+                                        if let Some(prev_msg) = user_prompts.get(next_idx) {
+                                            set_user_input.set(prev_msg.clone());
+                                        }
+                                    }
+                                }
+                            } else if key == "ArrowDown" && !ev.shift_key() && !ev.ctrl_key() && !ev.alt_key() {
+                                if let Some(cur_idx) = history_cursor.get_untracked() {
+                                    let user_prompts: Vec<String> = messages
+                                        .get_untracked()
+                                        .into_iter()
+                                        .filter(|m| m.role == "user")
+                                        .map(|m| {
+                                            let raw = m.content.get_untracked();
+                                            if raw.starts_with("📎 [") {
+                                                if let Some(end_bracket) = raw.find("] ") {
+                                                    raw[end_bracket + 2..].to_string()
+                                                } else {
+                                                    raw
+                                                }
+                                            } else {
+                                                raw
+                                            }
+                                        })
+                                        .filter(|s| !s.trim().is_empty())
+                                        .collect();
+
+                                    ev.prevent_default();
+                                    if cur_idx + 1 < user_prompts.len() {
+                                        let next_idx = cur_idx + 1;
+                                        set_history_cursor.set(Some(next_idx));
+                                        set_user_input.set(user_prompts[next_idx].clone());
+                                    } else {
+                                        set_history_cursor.set(None);
+                                        set_user_input.set(draft_before_history.get_untracked());
+                                    }
+                                }
                             }
                         }
                     />
-                    <button
-                        class="btn"
-                        disabled=move || is_loading.get() || is_extracting_attachment.get()
-                        on:click=move |_| send_message()
-                    >
-                        {move || if is_en() { "Send" } else { "Senden" }}
-                    </button>
+                    {move || if is_loading.get() {
+                        view! {
+                            <button
+                                class="btn-stop-subtle"
+                                title=move || if is_en() { "Stop current generation" } else { "Aktuelle Antwortgenerierung abbrechen" }
+                                on:click=move |_| stop_chat_generation()
+                            >
+                                <span class="stop-square"></span>
+                                <span>{move || if is_en() { "Stop" } else { "Stopp" }}</span>
+                            </button>
+                        }.into_view()
+                    } else {
+                        view! {
+                            <button
+                                class="btn"
+                                disabled=move || is_extracting_attachment.get()
+                                on:click=move |_| send_message()
+                            >
+                                {move || if is_en() { "Send" } else { "Senden" }}
+                            </button>
+                        }.into_view()
+                    }}
                 </div>
             </main>
 
@@ -2949,22 +3617,41 @@ fn App() -> impl IntoView {
                             {move || if modal_tab.get() == "files" {
                                 view! {
                                     <div style="display:flex; flex-direction:column; gap:1rem;">
-                                        // Revisions- & Projekt-Einstellungen
-                                        <div style="display:flex; flex-direction:column; gap:0.6rem; background:#0f172a; padding:0.85rem; border-radius:8px; border:1px solid #334155;">
-                                            <div>
-                                                <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
-                                                    {move || if is_en() {
-                                                        "Project / Folder / Category (optional, groups documents & namespaces identical filenames)"
-                                                    } else {
-                                                        "Projekt / Akte / Kategorie (optional, trennt gleichnamige Dateien verschiedener Projekte)"
-                                                    }}
-                                                </label>
-                                                <input
-                                                    type="text"
-                                                    placeholder=move || if is_en() { "e.g. Case 53-20, Project North, or Directives" } else { "z.B. Akte 53-20, Objekt Dichtervillen oder Dienstanweisungen" }
-                                                    prop:value=move || doc_category.get()
-                                                    on:input=move |ev| set_doc_category.set(event_target_value(&ev))
-                                                />
+                                        // Revisions-, Pipeline- & Projekt-Einstellungen
+                                        <div style="display:flex; flex-direction:column; gap:0.65rem; background:#0f172a; padding:0.85rem; border-radius:8px; border:1px solid #334155;">
+                                            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:0.75rem;">
+                                                <div>
+                                                    <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
+                                                        {move || if is_en() {
+                                                            "⚙️ Ingestion Pipeline (Document Domain & Parser)"
+                                                        } else {
+                                                            "⚙️ Ingestion-Pipeline (Dokumenttyp & Parser-Profil)"
+                                                        }}
+                                                    </label>
+                                                    <select
+                                                        prop:value=move || ingest_pipeline.get()
+                                                        on:change=move |ev| set_ingest_pipeline.set(event_target_value(&ev))
+                                                    >
+                                                        <option value="auto">{move || if is_en() { "🔄 Auto-detect (Legal XML vs. Generic)" } else { "🔄 Automatisch erkennen (Gesetzes-XML vs. Generisch)" }}</option>
+                                                        <option value="generic">{move || if is_en() { "📄 Generic Pipeline (PDF, Markdown, Contracts, Free Text)" } else { "📄 Generische Pipeline (PDF, Markdown, Verträge, Freitext)" }}</option>
+                                                        <option value="legal">{move || if is_en() { "⚖️ Legal & Statutes Pipeline (gii-norm XML, EUR-Lex Formex, §§)" } else { "⚖️ Gesetze & Verordnungen Pipeline (gii-norm XML, EUR-Lex Formex, §§)" }}</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
+                                                        {move || if is_en() {
+                                                            "📁 Project / Folder / Category (optional)"
+                                                        } else {
+                                                            "📁 Projekt / Akte / Kategorie (optional)"
+                                                        }}
+                                                    </label>
+                                                    <input
+                                                        type="text"
+                                                        placeholder=move || if is_en() { "e.g. Case 53-20, Project North, or Directives" } else { "z.B. Akte 53-20, Objekt Dichtervillen oder Dienstanweisungen" }
+                                                        prop:value=move || doc_category.get()
+                                                        on:input=move |ev| set_doc_category.set(event_target_value(&ev))
+                                                    />
+                                                </div>
                                             </div>
                                             <div class="toggle-row" style="margin-top:0.2rem;">
                                                 <input
@@ -3009,7 +3696,7 @@ fn App() -> impl IntoView {
                                             type="file"
                                             id="multi-file-upload"
                                             multiple=true
-                                            accept=".pdf,.md,.txt,.html,.htm,.json,.csv"
+                                            accept=".pdf,.xml,.md,.txt,.html,.htm,.json,.csv"
                                             style="display:none;"
                                             node_ref=file_input_ref
                                             on:change=on_files_selected
@@ -3053,40 +3740,135 @@ fn App() -> impl IntoView {
                                             </div>
                                         </div>
 
-                                        // Liste der ausgewählten Dateien als moderne Badges/Pills
-                                        {move || (!selected_file_names.get().is_empty()).then(|| view! {
-                                            <div class="file-pill-list">
-                                                {selected_file_names.get().into_iter().map(|(name, size)| view! {
-                                                    <div class="file-pill">
-                                                        <span>"📄 " {name}</span>
-                                                        <span style="color:#94a3b8;">{size}</span>
+                                        // Liste der ausgewählten Dateien als sauber ausgerichtetes 3-Spalten-Grid (Dateiname | Größe rechtsbündig | ✕)
+                                        {move || (!selected_file_names.get().is_empty()).then(|| {
+                                            let total_queued_kb: u64 = selected_files
+                                                .get()
+                                                .iter()
+                                                .map(|f| {
+                                                    let b: &web_sys::Blob = f.as_ref();
+                                                    (b.size() / 1024.0).max(1.0) as u64
+                                                })
+                                                .sum();
+                                            view! {
+                                                <div>
+                                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.55rem; margin-bottom:0.35rem; font-size:0.78rem; color:#94a3b8;">
+                                                        <span>
+                                                            {move || if is_en() {
+                                                                format!(
+                                                                    "{} file(s) queued ({} KB total)",
+                                                                    selected_file_names.get().len(),
+                                                                    total_queued_kb
+                                                                )
+                                                            } else {
+                                                                format!(
+                                                                    "{} Datei(en) in der Warteschlange ({} KB gesamt)",
+                                                                    selected_file_names.get().len(),
+                                                                    total_queued_kb
+                                                                )
+                                                            }}
+                                                        </span>
+                                                        <button
+                                                            class="btn btn-secondary"
+                                                            style="padding:0.2rem 0.55rem; font-size:0.73rem; background:#7f1d1d; color:#fecaca;"
+                                                            disabled=move || is_uploading.get()
+                                                            on:click=move |_| {
+                                                                set_selected_file_names.set(Vec::new());
+                                                                set_selected_files.set(Vec::new());
+                                                            }
+                                                        >
+                                                            {move || if is_en() { "✕ Clear all" } else { "✕ Alle entfernen" }}
+                                                        </button>
                                                     </div>
-                                                }).collect_view()}
+                                                    <div class="file-pill-list">
+                                                        {selected_file_names.get().into_iter().map(|(name, size)| {
+                                                            let name_to_remove = name.clone();
+                                                            view! {
+                                                                <div class="file-pill">
+                                                                    <span class="file-pill-name" title=name.clone()>"📄 " {name}</span>
+                                                                    <span class="file-pill-size">{size}</span>
+                                                                    <button
+                                                                        style="background:transparent; border:none; color:#fca5a5; cursor:pointer; font-size:0.76rem; padding:0; text-align:right;"
+                                                                        title=move || if is_en() { "Remove file from selection" } else { "Datei aus Auswahl entfernen" }
+                                                                        disabled=move || is_uploading.get()
+                                                                        on:click=move |_| {
+                                                                            let target = name_to_remove.clone();
+                                                                            let mut names = selected_file_names.get_untracked();
+                                                                            let mut files = selected_files.get_untracked();
+                                                                            if let Some(pos) = names.iter().position(|(n, _)| n == &target) {
+                                                                                names.remove(pos);
+                                                                                if pos < files.len() {
+                                                                                    files.remove(pos);
+                                                                                }
+                                                                                set_selected_file_names.set(names);
+                                                                                set_selected_files.set(files);
+                                                                            }
+                                                                        }
+                                                                    >
+                                                                        "✕"
+                                                                    </button>
+                                                                </div>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                </div>
+                                            }
+                                        })}
+
+                                        // Live-Fortschrittsbalken & dynamische Restzeit-Schätzung (ETA) während des Uploads
+                                        {move || (is_uploading.get() && !upload_eta_text.get().is_empty()).then(|| view! {
+                                            <div style="background:#0f172a; border:1px solid #4f46e5; border-radius:0.5rem; padding:0.65rem 0.85rem; display:flex; flex-direction:column; gap:0.4rem;">
+                                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.78rem; color:#e2e8f0; font-variant-numeric:tabular-nums;">
+                                                    <span>"⏱️ " {move || upload_eta_text.get()}</span>
+                                                </div>
+                                                <div style="width:100%; height:7px; background:#1e293b; border-radius:999px; overflow:hidden;">
+                                                    <div
+                                                        style=move || format!(
+                                                            "height:100%; width:{:.1}%; background:linear-gradient(90deg, #6366f1, #38bdf8); transition:width 0.35s ease;",
+                                                            upload_progress_pct.get()
+                                                        )
+                                                    ></div>
+                                                </div>
                                             </div>
                                         })}
 
-                                        <button
-                                            class="btn"
-                                            disabled=move || is_uploading.get() || selected_file_names.get().is_empty()
-                                            on:click=on_upload_files
-                                        >
-                                            {move || if is_uploading.get() {
-                                                if is_en() { "Processing files...".to_string() } else { "Verarbeite Dateien...".to_string() }
-                                            } else {
-                                                let n = selected_file_names.get().len();
-                                                if n > 0 {
-                                                    if is_en() {
-                                                        format!("🚀 Upload & index {} selected file(s)", n)
-                                                    } else {
-                                                        format!("🚀 {} ausgewählte Datei(en) hochladen & indexieren", n)
-                                                    }
-                                                } else if is_en() {
-                                                    "Upload & index files".to_string()
+                                        <div style="display:flex; gap:0.65rem; align-items:center;">
+                                            <button
+                                                class="btn"
+                                                style="flex:1;"
+                                                disabled=move || is_uploading.get() || selected_file_names.get().is_empty()
+                                                on:click=on_upload_files
+                                            >
+                                                {move || if is_uploading.get() {
+                                                    if is_en() { "⏳ Processing files...".to_string() } else { "⏳ Verarbeite Dateien...".to_string() }
                                                 } else {
-                                                    "Dateien hochladen & indexieren".to_string()
-                                                }
-                                            }}
-                                        </button>
+                                                    let n = selected_file_names.get().len();
+                                                    if n > 0 {
+                                                        if is_en() {
+                                                            format!("🚀 Upload & index {} selected file(s)", n)
+                                                        } else {
+                                                            format!("🚀 {} ausgewählte Datei(en) hochladen & indexieren", n)
+                                                        }
+                                                    } else if is_en() {
+                                                        "Upload & index files".to_string()
+                                                    } else {
+                                                        "Dateien hochladen & indexieren".to_string()
+                                                    }
+                                                }}
+                                            </button>
+                                            {move || is_uploading.get().then(|| view! {
+                                                <button
+                                                    type="button"
+                                                    class="btn-stop-subtle"
+                                                    style="height:auto; padding:0.62rem 0.85rem;"
+                                                    title=move || if is_en() { "Cancel running upload" } else { "Laufenden Upload sofort abbrechen" }
+                                                    on:click=cancel_upload
+                                                >
+                                                    <span class="stop-square"></span>
+                                                    <span>{move || if is_en() { "Cancel" } else { "Abbrechen" }}</span>
+                                                </button>
+                                            })}
+                                        </div>
                                     </div>
                                 }.into_view()
                             } else if modal_tab.get() == "text" {
@@ -3457,6 +4239,10 @@ fn App() -> impl IntoView {
                                                                                 let title_for_view = doc.doc_title.clone();
                                                                                 let id_for_title_click = doc.doc_id.clone();
                                                                                 let title_for_title_click = doc.doc_title.clone();
+                                                                                let title_for_hdr_tip = doc.doc_title.clone();
+                                                                                let title_for_btn_tip = doc.doc_title.clone();
+                                                                                let title_for_btn_lbl = doc.doc_title.clone();
+                                                                                let (doc_icon, _, _, _) = doc_format_labels(&doc.doc_title, false);
                                                                                 let (_, clean_title) = parse_category_and_title(&doc.doc_title);
                                                                                 let chunk_badge = format!("🧩 {} Chunks", doc.chunk_count);
                                                                                 let date_badge = format!("🕒 {}", doc.created_at);
@@ -3469,12 +4255,12 @@ fn App() -> impl IntoView {
                                                                                         <div
                                                                                             class="doc-card-header"
                                                                                             style="cursor:pointer;"
-                                                                                            title=move || if is_en() { "Click to open PDF" } else { "Klicken, um das PDF anzuzeigen" }
+                                                                                            title=move || doc_format_labels(&title_for_hdr_tip, is_en()).2
                                                                                             on:click=move |_| {
                                                                                                 set_viewing_pdf_doc.set(Some((id_for_title_click.clone(), title_for_title_click.clone())));
                                                                                             }
                                                                                         >
-                                                                                            <span class="doc-card-icon">"📄"</span>
+                                                                                            <span class="doc-card-icon">{doc_icon}</span>
                                                                                             <span class="doc-card-title" title=doc.doc_title.clone()>
                                                                                                 {clean_title}
                                                                                             </span>
@@ -3514,12 +4300,12 @@ fn App() -> impl IntoView {
                                                                                             <button
                                                                                                 class="btn btn-secondary"
                                                                                                 style="padding:0.25rem 0.6rem; font-size:0.75rem; background:rgba(99,102,241,0.18); color:#c7d2fe; border-color:#6366f1;"
-                                                                                                title=move || if is_en() { "View PDF directly in browser" } else { "PDF direkt im Browser anzeigen" }
+                                                                                                title=move || doc_format_labels(&title_for_btn_tip, is_en()).2
                                                                                                 on:click=move |_| {
                                                                                                     set_viewing_pdf_doc.set(Some((id_for_view.clone(), title_for_view.clone())));
                                                                                                 }
                                                                                             >
-                                                                                                {move || if is_en() { "📄 View PDF" } else { "📄 PDF anzeigen" }}
+                                                                                                {move || doc_format_labels(&title_for_btn_lbl, is_en()).1}
                                                                                             </button>
                                                                                             <button
                                                                                                 class="btn btn-secondary"
@@ -4211,7 +4997,7 @@ fn App() -> impl IntoView {
             }
         })}
 
-            // --- Modal-Dialog: Generische LLM-, Remote-GPU- (RunPod) & Cloud-Konfiguration (Immer im Focus Screen / Vollbild) ---
+            // --- Modal-Dialog: Strukturiertes Einstellungs-Menü (RAG, LLM, RunPod GPU Cloud & System) ---
             {move || show_llm_modal.get().then(|| view! {
                 <div class="modal-backdrop fullscreen" on:click=move |_| set_show_llm_modal.set(false)>
                     <div
@@ -4219,94 +5005,262 @@ fn App() -> impl IntoView {
                         on:click=move |ev| ev.stop_propagation()
                     >
                         <div class="modal-header">
-                            <h2>
-                                {move || if is_en() {
-                                    "⚙️ Settings (Language, RAG Pipeline, Reranker & LLM)"
-                                } else {
-                                    "⚙️ Einstellungen (Sprache, RAG-Pipeline, Reranker & LLM)"
-                                }}
+                            <h2 style="display:flex; align-items:center; gap:0.55rem;">
+                                <span>"⚙️"</span>
+                                <span>
+                                    {move || if is_en() {
+                                        "Settings & Cloud GPU Control Center"
+                                    } else {
+                                        "Einstellungen & Cloud-GPU Control Center"
+                                    }}
+                                </span>
                             </h2>
                             <button
                                 class="btn btn-secondary"
-                                style="padding: 0.3rem 0.65rem; font-size: 0.8rem;"
+                                style="padding: 0.35rem 0.75rem; font-size: 0.8rem;"
                                 on:click=move |_| set_show_llm_modal.set(false)
                             >
                                 {move || if is_en() { "✕ Close" } else { "✕ Schließen" }}
                             </button>
                         </div>
 
-                        <div class="modal-body" style="gap: 1rem;">
-                            // --- Sektion 0: UI-Sprache (Deutsch / English) ---
-                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 0.65rem 0.9rem;">
-                                <span style="font-size: 0.82rem; font-weight: 600; color: #e2e8f0;">
-                                    {move || if is_en() { "🌐 UI Language / Sprache" } else { "🌐 Chat-UI Sprache / Language" }}
-                                </span>
-                                <div style="display: flex; gap: 0.45rem;">
+                        <div class="settings-layout">
+                            // --- Linke Menü-Spalte (Settings Navigation) ---
+                            <aside class="settings-sidebar">
+                                <div class="settings-nav-list">
                                     <button
-                                        class="btn btn-secondary"
-                                        style=move || if !is_en() {
-                                            "padding: 0.3rem 0.75rem; font-size: 0.78rem; background: #4f46e5; color: #fff; border-color: #818cf8;"
-                                        } else {
-                                            "padding: 0.3rem 0.75rem; font-size: 0.78rem;"
-                                        }
-                                        on:click=move |_| {
-                                            set_ui_lang.set("de".to_string());
-                                            save_lang_to_storage("de");
-                                        }
+                                        type="button"
+                                        class=move || if settings_tab.get() == "rag" { "settings-nav-btn active" } else { "settings-nav-btn" }
+                                        on:click=move |_| set_settings_tab.set("rag".to_string())
                                     >
-                                        "🇩🇪 Deutsch"
+                                        <span class="settings-nav-icon">"🔍"</span>
+                                        <div class="settings-nav-text">
+                                            <span class="settings-nav-title">
+                                                {move || if is_en() { "RAG & Retrieval" } else { "RAG & Retrieval" }}
+                                            </span>
+                                            <span class="settings-nav-sub">
+                                                {move || format!("Top-{} · {} ctx · T={:.1}", top_n.get(), num_ctx_sig.get() / 1024, temperature_sig.get())}
+                                            </span>
+                                        </div>
                                     </button>
+
                                     <button
-                                        class="btn btn-secondary"
-                                        style=move || if is_en() {
-                                            "padding: 0.3rem 0.75rem; font-size: 0.78rem; background: #4f46e5; color: #fff; border-color: #818cf8;"
-                                        } else {
-                                            "padding: 0.3rem 0.75rem; font-size: 0.78rem;"
-                                        }
+                                        type="button"
+                                        class=move || if settings_tab.get() == "llm" { "settings-nav-btn active" } else { "settings-nav-btn" }
+                                        on:click=move |_| set_settings_tab.set("llm".to_string())
+                                    >
+                                        <span class="settings-nav-icon">"🤖"</span>
+                                        <div class="settings-nav-text">
+                                            <span class="settings-nav-title">
+                                                {move || if is_en() { "Language Model (LLM)" } else { "Sprachmodell (LLM)" }}
+                                            </span>
+                                            <span class="settings-nav-sub">
+                                                {move || llm_model_sig.get()}
+                                            </span>
+                                        </div>
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class=move || if settings_tab.get() == "runpod" { "settings-nav-btn active" } else { "settings-nav-btn" }
                                         on:click=move |_| {
-                                            set_ui_lang.set("en".to_string());
-                                            save_lang_to_storage("en");
+                                            set_settings_tab.set("runpod".to_string());
+                                            refresh_runpod_status();
                                         }
                                     >
-                                        "🇬🇧 English"
+                                        <span class="settings-nav-icon">"🚀"</span>
+                                        <div class="settings-nav-text">
+                                            <span class="settings-nav-title">"RunPod GPU Cloud"</span>
+                                            <span class="settings-nav-sub">
+                                                {move || match rp_phase.get().as_str() {
+                                                    "running" => format!("🟢 Aktiv ({})", rp_gpu_type.get()),
+                                                    "deploying" | "waiting_ssh" | "loading_models" => "🟡 Startet Pod...".to_string(),
+                                                    "error" => "🔴 Fehler".to_string(),
+                                                    _ => if is_en() { "SSH Tunnel (LLM + Embed)".to_string() } else { "SSH-Tunnel (LLM + Embed)".to_string() }
+                                                }}
+                                            </span>
+                                        </div>
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class=move || if settings_tab.get() == "backup" { "settings-nav-btn active" } else { "settings-nav-btn" }
+                                        on:click=move |_| {
+                                            set_db_backup_status.set(String::new());
+                                            refresh_documents();
+                                            set_settings_tab.set("backup".to_string());
+                                        }
+                                    >
+                                        <span class="settings-nav-icon">"💾"</span>
+                                        <div class="settings-nav-text">
+                                            <span class="settings-nav-title">
+                                                {move || if is_en() { "SurrealDB Backup" } else { "SurrealDB Backup" }}
+                                            </span>
+                                            <span class="settings-nav-sub">
+                                                {move || {
+                                                    let docs = stored_docs.get();
+                                                    let chunks: usize = docs.iter().map(|d| d.chunk_count).sum();
+                                                    if is_en() {
+                                                        format!("Export / Import ({} docs · {} chunks)", docs.len(), chunks)
+                                                    } else {
+                                                        format!("Export / Import ({} Dok. · {} Chunks)", docs.len(), chunks)
+                                                    }
+                                                }}
+                                            </span>
+                                        </div>
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class=move || if settings_tab.get() == "system" { "settings-nav-btn active" } else { "settings-nav-btn" }
+                                        on:click=move |_| set_settings_tab.set("system".to_string())
+                                    >
+                                        <span class="settings-nav-icon">"🌐"</span>
+                                        <div class="settings-nav-text">
+                                            <span class="settings-nav-title">
+                                                {move || if is_en() { "General & System" } else { "Allgemein & System" }}
+                                            </span>
+                                            <span class="settings-nav-sub">
+                                                {move || if is_en() { "Language (EN) & Endpoints" } else { "Sprache (DE) & Ports" }}
+                                            </span>
+                                        </div>
                                     </button>
                                 </div>
-                            </div>
 
-                            // --- Sektion A: RAG & Retrieval-Pipeline ---
-                            <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 0.9rem; display: flex; flex-direction: column; gap: 0.85rem;">
-                                <div style="font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
-                                    {move || if is_en() {
-                                        "🔍 RAG & Retrieval Pipeline (SurrealDB + TEI)"
-                                    } else {
-                                        "🔍 RAG & Retrieval-Pipeline (SurrealDB + TEI)"
+                                <div style="padding: 0.7rem; background: rgba(15, 23, 42, 0.75); border: 1px solid #1e293b; border-radius: 0.55rem; font-size: 0.73rem; color: #94a3b8; display: flex; flex-direction: column; gap: 0.3rem;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">
+                                        {move || if is_en() { "Active Configuration:" } else { "Aktiver Status:" }}
+                                    </div>
+                                    <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                        "🤖 " <strong style="color:#a5b4fc;">{move || llm_model_sig.get()}</strong>
+                                    </div>
+                                    <div>
+                                        "🚀 RunPod: "
+                                        <strong style=move || if rp_phase.get() == "running" { "color:#34d399;" } else { "color:#94a3b8;" }>
+                                            {move || if rp_phase.get() == "running" { "Verbunden" } else { "Aus (Lokal)" }}
+                                        </strong>
+                                    </div>
+                                </div>
+                            </aside>
+
+                            // --- Rechte Inhalts-Spalte ---
+                            <div class="settings-content-pane">
+                                <div class="settings-content-inner">
+                                    // =========================================================================
+                                    // TAB 1: RAG & Retrieval-Pipeline
+                                    // =========================================================================
+                                    {move || (settings_tab.get() == "rag").then(|| view! {
+                                        <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.1rem; display: flex; flex-direction: column; gap: 1rem;">
+                                            <div style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8; border-bottom: 1px solid #1e293b; padding-bottom: 0.55rem;">
+                                                {move || if is_en() {
+                                                    "🔍 RAG & Retrieval Pipeline (SurrealDB + TEI)"
+                                                } else {
+                                                    "🔍 RAG & Retrieval-Pipeline (SurrealDB + TEI)"
                                     }}
                                 </div>
 
-                                <div class="toggle-row">
-                                    <input
-                                        type="checkbox"
-                                        id="rag-toggle-modal"
-                                        prop:checked=move || use_rag.get()
-                                        on:change=move |ev| {
-                                            let checked = ev.target().unwrap().unchecked_into::<HtmlInputElement>().checked();
-                                            set_use_rag.set(checked);
-                                            save_use_rag_to_storage(checked);
-                                        }
-                                    />
-                                    <label for="rag-toggle-modal" style="margin:0; color:#f8fafc; cursor:pointer; font-size:0.85rem;">
-                                        {move || if is_en() {
-                                            "Enable Hybrid Search + GraphRAG (search SurrealDB knowledge base on every question)"
-                                        } else {
-                                            "Hybrid Search + GraphRAG aktivieren (SurrealDB Wissensdatenbank bei Fragen durchsuchen)"
-                                        }}
-                                    </label>
+                                // 0. Hybrid Search + GraphRAG Toggle
+                                <div>
+                                    <div class="toggle-row" style="display:flex; align-items:center; gap:0.5rem;">
+                                        <input
+                                            type="checkbox"
+                                            id="rag-toggle-modal"
+                                            prop:checked=move || use_rag.get()
+                                            on:change=move |ev| {
+                                                let checked = ev.target().unwrap().unchecked_into::<HtmlInputElement>().checked();
+                                                set_use_rag.set(checked);
+                                                save_use_rag_to_storage(checked);
+                                            }
+                                        />
+                                        <label for="rag-toggle-modal" style="margin:0; color:#f8fafc; cursor:pointer; font-size:0.85rem;">
+                                            {move || if is_en() {
+                                                "Enable Hybrid Search + GraphRAG (search SurrealDB knowledge base on every question)"
+                                            } else {
+                                                "Hybrid Search + GraphRAG aktivieren (SurrealDB Wissensdatenbank bei Fragen durchsuchen)"
+                                            }}
+                                        </label>
+                                        <button
+                                            type="button"
+                                            style=move || if open_rag_help.get() == Some("hybrid_rag") {
+                                                "width:18px; height:18px; border-radius:50%; border:1px solid #818cf8; background:#4f46e5; color:#fff; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0; flex-shrink:0;"
+                                            } else {
+                                                "width:18px; height:18px; border-radius:50%; border:1px solid #475569; background:#1e293b; color:#94a3b8; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0; flex-shrink:0;"
+                                            }
+                                            title=move || if is_en() { "Show explanation" } else { "Erklärung anzeigen" }
+                                            on:click=move |_| {
+                                                if open_rag_help.get() == Some("hybrid_rag") {
+                                                    set_open_rag_help.set(None);
+                                                } else {
+                                                    set_open_rag_help.set(Some("hybrid_rag"));
+                                                }
+                                            }
+                                        >
+                                            "?"
+                                        </button>
+                                    </div>
+                                    {move || (open_rag_help.get() == Some("hybrid_rag")).then(|| view! {
+                                        <div style="margin-top:0.45rem; padding:0.65rem 0.85rem; background:rgba(30,41,59,0.9); border:1px solid #334155; border-left:3px solid #6366f1; border-radius:0.45rem; font-size:0.76rem; color:#cbd5e1; line-height:1.5;">
+                                            {move || if is_en() {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Combines three search engines in SurrealDB 4.0 via Reciprocal Rank Fusion (RRF):"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"1. HNSW Vector Search (BGE-M3):"</strong> " Finds semantically related passages even when phrased differently."</div>
+                                                            <div><strong style="color:#a5b4fc;">"2. BM25 Full-Text Search:"</strong> " Matches exact statutory citations (§ 10 GwG, Art. 11 AMLR), numbers, and technical terms."</div>
+                                                            <div><strong style="color:#a5b4fc;">"3. 2-Hop Knowledge Graph:"</strong> " Traverses linked entities and cross-references across documents."</div>
+                                                        </div>
+                                                        <div style="margin-top:0.35rem; color:#94a3b8; font-size:0.73rem;">
+                                                            "💡 When unchecked, the LLM answers purely from its pre-trained weights without querying SurrealDB."
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Kombiniert drei Suchverfahren in SurrealDB 4.0 per Reciprocal Rank Fusion (RRF):"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"1. HNSW-Vektorsuche (BGE-M3):"</strong> " Findet inhaltlich passende Abschnitte auch bei abweichender Wortwahl."</div>
+                                                            <div><strong style="color:#a5b4fc;">"2. BM25-Volltextsuche:"</strong> " Trifft exakte Paragraphen (§ 10 GwG, Art. 11 AMLR), Schwellenwerte und Fachbegriffe."</div>
+                                                            <div><strong style="color:#a5b4fc;">"3. 2-Hop-Wissensgraph:"</strong> " Verfolgt Querverweise und verknüpfte Entitäten über Dokumentgrenzen hinweg."</div>
+                                                        </div>
+                                                        <div style="margin-top:0.35rem; color:#94a3b8; font-size:0.73rem;">
+                                                            "💡 Wenn deaktiviert, antwortet das LLM ausschließlich aus seinem eigenen Trainingswissen ohne Datenbankabfrage."
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </div>
+                                    })}
                                 </div>
 
                                 // 1. Cross-Encoder Reranker Wahl (Sleek Buttons)
                                 <div>
                                     <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
-                                        <span>"Cross-Encoder Reranker"</span>
+                                        <span style="display:inline-flex; align-items:center; gap:0.4rem;">
+                                            <span>"Cross-Encoder Reranker"</span>
+                                            <button
+                                                type="button"
+                                                style=move || if open_rag_help.get() == Some("reranker") {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #818cf8; background:#4f46e5; color:#fff; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                } else {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #475569; background:#1e293b; color:#94a3b8; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                }
+                                                title=move || if is_en() { "Show explanation" } else { "Erklärung anzeigen" }
+                                                on:click=move |_| {
+                                                    if open_rag_help.get() == Some("reranker") {
+                                                        set_open_rag_help.set(None);
+                                                    } else {
+                                                        set_open_rag_help.set(Some("reranker"));
+                                                    }
+                                                }
+                                            >
+                                                "?"
+                                            </button>
+                                        </span>
                                         <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
                                             {move || match reranker_mode.get().as_str() {
                                                 "high" => "🎯 High (bge-reranker-v2-m3)",
@@ -4315,6 +5269,37 @@ fn App() -> impl IntoView {
                                             }}
                                         </span>
                                     </div>
+                                    {move || (open_rag_help.get() == Some("reranker")).then(|| view! {
+                                        <div style="margin-bottom:0.5rem; padding:0.65rem 0.85rem; background:rgba(30,41,59,0.9); border:1px solid #334155; border-left:3px solid #6366f1; border-radius:0.45rem; font-size:0.76rem; color:#cbd5e1; line-height:1.5;">
+                                            {move || if is_en() {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "After SurrealDB retrieves 15–25 candidate chunks, the Cross-Encoder reads your question and each chunk together to compute an exact relevance score:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.28rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"⚡ Fast (mmarco-mMiniLMv2-L12):"</strong> " Multilingual 12-layer Cross-Encoder (~250 ms) — best everyday balance of speed and precision."</div>
+                                                            <div><strong style="color:#a5b4fc;">"🎯 High (bge-reranker-v2-m3):"</strong> " Large 568M-parameter model (~2.2 s) — highest accuracy for complex legal questions across multiple statutes."</div>
+                                                            <div><strong style="color:#a5b4fc;">"🚀 Off (SurrealDB RRF only):"</strong> " Skips neural reranking (~15 ms) and uses SurrealDB's combined vector + full-text ranking directly."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Nachdem SurrealDB die ersten 15–25 Kandidaten-Chunks gefunden hat, prüft der Cross-Encoder Frage und Textabschnitt gemeinsam auf ihre exakte Relevanz:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.28rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"⚡ Fast (mmarco-mMiniLMv2-L12):"</strong> " Mehrsprachiger 12-Layer Cross-Encoder (~250 ms) – optimaler Standard für schnelle und präzise Antworten."</div>
+                                                            <div><strong style="color:#a5b4fc;">"🎯 High (bge-reranker-v2-m3):"</strong> " Großes 568M-Parameter-Modell (~2,2 s) – höchste Genauigkeit bei komplexen juristischen Detailfragen über viele Gesetze hinweg."</div>
+                                                            <div><strong style="color:#a5b4fc;">"🚀 Aus (Nur SurrealDB RRF):"</strong> " Überspringt das neuronale Reranking (~15 ms) und nutzt direkt das kombinierte Vektor-/Volltext-Ranking aus SurrealDB."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </div>
+                                    })}
                                     <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
                                         <button
                                             type="button"
@@ -4364,11 +5349,66 @@ fn App() -> impl IntoView {
                                 // 2. Top-N Chunks Wahl (Sleek Buttons)
                                 <div>
                                     <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
-                                        <span>{move || if is_en() { "Top-N Context Chunks to LLM" } else { "Top-N Dokument-Chunks für LLM" }}</span>
+                                        <span style="display:inline-flex; align-items:center; gap:0.4rem;">
+                                            <span>{move || if is_en() { "Top-N Context Chunks to LLM" } else { "Top-N Dokument-Chunks für LLM" }}</span>
+                                            <button
+                                                type="button"
+                                                style=move || if open_rag_help.get() == Some("top_n") {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #818cf8; background:#4f46e5; color:#fff; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                } else {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #475569; background:#1e293b; color:#94a3b8; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                }
+                                                title=move || if is_en() { "Show explanation" } else { "Erklärung anzeigen" }
+                                                on:click=move |_| {
+                                                    if open_rag_help.get() == Some("top_n") {
+                                                        set_open_rag_help.set(None);
+                                                    } else {
+                                                        set_open_rag_help.set(Some("top_n"));
+                                                    }
+                                                }
+                                            >
+                                                "?"
+                                            </button>
+                                        </span>
                                         <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
                                             {move || format!("Top-{} Chunks", top_n.get())}
                                         </span>
                                     </div>
+                                    {move || (open_rag_help.get() == Some("top_n")).then(|| view! {
+                                        <div style="margin-bottom:0.5rem; padding:0.65rem 0.85rem; background:rgba(30,41,59,0.9); border:1px solid #334155; border-left:3px solid #6366f1; border-radius:0.45rem; font-size:0.76rem; color:#cbd5e1; line-height:1.5;">
+                                            {move || if is_en() {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Number of top-ranked text passages (chunks) passed to the LLM after reranking:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"• 3 – 4 Chunks:"</strong> " Fast & focused — ideal for specific questions about a single paragraph or definition."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 6 – 10 Chunks:"</strong> " Broad coverage — recommended when comparing multiple laws simultaneously (e.g. GwG vs. KWG vs. EU AMLR)."</div>
+                                                        </div>
+                                                        <div style="margin-top:0.35rem; color:#94a3b8; font-size:0.73rem;">
+                                                            "💡 Automatic document diversity ensures a single law cannot monopolize all Top-N slots."
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Anzahl der bestbewerteten Textabschnitte (Chunks), die nach dem Reranking als Kontext an das LLM übergeben werden:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"• 3 – 4 Chunks:"</strong> " Schnell & fokussiert – ideal für gezielte Einzelfragen zu einem bestimmten Paragraphen."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 6 – 10 Chunks:"</strong> " Breite Abdeckung – empfohlen bei übergreifenden Vergleichen mehrerer Gesetze (z. B. GwG, KWG und EU-AMLR)."</div>
+                                                        </div>
+                                                        <div style="margin-top:0.35rem; color:#94a3b8; font-size:0.73rem;">
+                                                            "💡 Die automatische Dokumenten-Diversität stellt sicher, dass nicht ein einziges Gesetz alle Top-N-Plätze belegt."
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </div>
+                                    })}
                                     <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
                                         {[3, 4, 6, 8, 10].into_iter().map(|n| {
                                             view! {
@@ -4394,11 +5434,62 @@ fn App() -> impl IntoView {
                                 // 3. LLM Context-Fenster (num_ctx in Tokens)
                                 <div>
                                     <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
-                                        <span>{move || if is_en() { "LLM Context Window (num_ctx in tokens)" } else { "LLM Kontext-Fenster (num_ctx in Tokens)" }}</span>
+                                        <span style="display:inline-flex; align-items:center; gap:0.4rem;">
+                                            <span>{move || if is_en() { "LLM Context Window (num_ctx in tokens)" } else { "LLM Kontext-Fenster (num_ctx in Tokens)" }}</span>
+                                            <button
+                                                type="button"
+                                                style=move || if open_rag_help.get() == Some("num_ctx") {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #818cf8; background:#4f46e5; color:#fff; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                } else {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #475569; background:#1e293b; color:#94a3b8; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                }
+                                                title=move || if is_en() { "Show explanation" } else { "Erklärung anzeigen" }
+                                                on:click=move |_| {
+                                                    if open_rag_help.get() == Some("num_ctx") {
+                                                        set_open_rag_help.set(None);
+                                                    } else {
+                                                        set_open_rag_help.set(Some("num_ctx"));
+                                                    }
+                                                }
+                                            >
+                                                "?"
+                                            </button>
+                                        </span>
                                         <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
                                             {move || format!("{} Tokens", num_ctx_sig.get())}
                                         </span>
                                     </div>
+                                    {move || (open_rag_help.get() == Some("num_ctx")).then(|| view! {
+                                        <div style="margin-bottom:0.5rem; padding:0.65rem 0.85rem; background:rgba(30,41,59,0.9); border:1px solid #334155; border-left:3px solid #6366f1; border-radius:0.45rem; font-size:0.76rem; color:#cbd5e1; line-height:1.5;">
+                                            {move || if is_en() {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Maximum token memory (num_ctx) allocated for prompt + retrieved chunks + chat history + answer:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"• 4k – 8k:"</strong> " Low RAM/VRAM usage — suitable for short chats with 3–4 chunks."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 16k (Default):"</strong> " ~12,000 words — recommended balance for standard RAG & GraphRAG sessions."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 32k – 64k:"</strong> " Extended memory — ideal for 8–10 chunks, multi-file attachments (📎), or long multi-turn analyses."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Maximales Token-Gedächtnis (num_ctx) für System-Prompt, gefundene RAG-Chunks, Chat-Verlauf und Antwort:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"• 4k – 8k:"</strong> " Geringer RAM-/VRAM-Bedarf – ausreichend für kurze Fragen mit 3–4 Chunks."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 16k (Default):"</strong> " ~12.000 Wörter – empfohlener Standard für normale RAG- und Gesetzesabfragen."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 32k – 64k:"</strong> " Großes Kontextfenster – ideal bei 8–10 Chunks, mehreren Datei-Anhängen (📎) oder langen Chat-Verläufen."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </div>
+                                    })}
                                     <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
                                         {[(4096u64, "4k"), (8192u64, "8k"), (16384u64, "16k (Default)"), (32768u64, "32k"), (65536u64, "64k")].into_iter().map(|(ctx, lbl)| {
                                             view! {
@@ -4424,7 +5515,27 @@ fn App() -> impl IntoView {
                                 // 4. Reasoning / Denkmodus (DeepSeek-R1, QwQ)
                                 <div>
                                     <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
-                                        <span>{move || if is_en() { "Thinking / Reasoning Mode (DeepSeek-R1, QwQ)" } else { "Denkprozess / Reasoning (DeepSeek-R1, QwQ)" }}</span>
+                                        <span style="display:inline-flex; align-items:center; gap:0.4rem;">
+                                            <span>{move || if is_en() { "Thinking / Reasoning Mode (DeepSeek-R1, QwQ)" } else { "Denkprozess / Reasoning (DeepSeek-R1, QwQ)" }}</span>
+                                            <button
+                                                type="button"
+                                                style=move || if open_rag_help.get() == Some("thinking") {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #818cf8; background:#4f46e5; color:#fff; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                } else {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #475569; background:#1e293b; color:#94a3b8; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                }
+                                                title=move || if is_en() { "Show explanation" } else { "Erklärung anzeigen" }
+                                                on:click=move |_| {
+                                                    if open_rag_help.get() == Some("thinking") {
+                                                        set_open_rag_help.set(None);
+                                                    } else {
+                                                        set_open_rag_help.set(Some("thinking"));
+                                                    }
+                                                }
+                                            >
+                                                "?"
+                                            </button>
+                                        </span>
                                         <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
                                             {move || if think_mode_sig.get() {
                                                 if is_en() { "🧠 Thinking visible" } else { "🧠 Denken aktiv" }
@@ -4433,6 +5544,35 @@ fn App() -> impl IntoView {
                                             }}
                                         </span>
                                     </div>
+                                    {move || (open_rag_help.get() == Some("thinking")).then(|| view! {
+                                        <div style="margin-bottom:0.5rem; padding:0.65rem 0.85rem; background:rgba(30,41,59,0.9); border:1px solid #334155; border-left:3px solid #6366f1; border-radius:0.45rem; font-size:0.76rem; color:#cbd5e1; line-height:1.5;">
+                                            {move || if is_en() {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Controls the internal chain-of-thought (<think>...</think>) for reasoning models (DeepSeek-R1, QwQ, Qwen3):"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"🧠 Thinking ON:"</strong> " Model verifies legal requirements, exceptions, and calculations step-by-step before answering (collapsible in chat)."</div>
+                                                            <div><strong style="color:#a5b4fc;">"⚡ Fast (Suppress <think>):"</strong> " Skips the internal monologue and streams the final answer immediately."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Steuert die interne Denkkette (<think>...</think>) bei Reasoning-Modellen (DeepSeek-R1, QwQ, Qwen3):"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"🧠 Denken AN:"</strong> " Das Modell prüft vor der Antwort Schritt für Schritt alle Tatbestandsmerkmale, Ausnahmen und Fristen (im Chat auf-/zuklappbar)."</div>
+                                                            <div><strong style="color:#a5b4fc;">"⚡ Schnell (Ohne Denkschritte):"</strong> " Überspringt den internen Denkprozess und streamt die fertige Antwort sofort ohne Wartezeit."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </div>
+                                    })}
                                     <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
                                         <button
                                             type="button"
@@ -4464,11 +5604,111 @@ fn App() -> impl IntoView {
                                         </button>
                                     </div>
                                 </div>
-                            </div>
 
-                            // --- Sektion B: LLM-Server, Remote-GPU & Cloud ---
-                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; background: rgba(30, 41, 59, 0.65); border: 1px solid #475569; border-radius: 0.65rem; padding: 0.65rem 0.9rem; margin-top: 0.15rem;">
-                                <div style="font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
+                                // 5. LLM Temperatur (temperature: 0.0 bis 1.0)
+                                <div>
+                                    <div style="font-size:0.76rem; color:#94a3b8; margin-bottom:0.35rem; display:flex; justify-content:space-between; align-items:center;">
+                                        <span style="display:inline-flex; align-items:center; gap:0.4rem;">
+                                            <span>{move || if is_en() { "LLM Temperature (0.0 = strict/legal, 0.7 = creative)" } else { "LLM Temperatur (0.0 = strikt/Gesetze, 0.7 = kreativ)" }}</span>
+                                            <button
+                                                type="button"
+                                                style=move || if open_rag_help.get() == Some("temperature") {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #818cf8; background:#4f46e5; color:#fff; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                } else {
+                                                    "width:18px; height:18px; border-radius:50%; border:1px solid #475569; background:#1e293b; color:#94a3b8; font-size:0.7rem; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:0;"
+                                                }
+                                                title=move || if is_en() { "Show explanation" } else { "Erklärung anzeigen" }
+                                                on:click=move |_| {
+                                                    if open_rag_help.get() == Some("temperature") {
+                                                        set_open_rag_help.set(None);
+                                                    } else {
+                                                        set_open_rag_help.set(Some("temperature"));
+                                                    }
+                                                }
+                                            >
+                                                "?"
+                                            </button>
+                                        </span>
+                                        <span style="color:#a5b4fc; font-weight:600; font-size:0.75rem;">
+                                            {move || format!("T = {:.2}", temperature_sig.get())}
+                                        </span>
+                                    </div>
+                                    {move || (open_rag_help.get() == Some("temperature")).then(|| view! {
+                                        <div style="margin-bottom:0.5rem; padding:0.65rem 0.85rem; background:rgba(30,41,59,0.9); border:1px solid #334155; border-left:3px solid #6366f1; border-radius:0.45rem; font-size:0.76rem; color:#cbd5e1; line-height:1.5;">
+                                            {move || if is_en() {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Controls sampling randomness and creativity during text generation:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"• 0.0 – 0.1 (Strict):"</strong> " Maximum determinism & factual precision — strongly recommended for statutory interpretation (GwG, KWG, AMLR, tax law)."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 0.2 (Default):"</strong> " Balanced factual accuracy with natural phrasing."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 0.4 – 0.7+ (Creative):"</strong> " Higher linguistic variety for drafting emails, summaries, or brainstorming."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div>
+                                                        <div style="font-weight:600; color:#e2e8f0; margin-bottom:0.35rem;">
+                                                            "Steuert den Zufallsgrad und die Wortwahl bei der Textgenerierung:"
+                                                        </div>
+                                                        <div style="display:flex; flex-direction:column; gap:0.25rem; padding-left:0.2rem;">
+                                                            <div><strong style="color:#a5b4fc;">"• 0.0 – 0.1 (Strikt):"</strong> " Maximal deterministisch & streng am Gesetzestext orientiert – ideal für Geldwäsche-, Bankaufsichts- und Steuerrecht."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 0.2 (Default):"</strong> " Hohe Faktenpräzision bei gleichzeitig flüssiger Formulierung."</div>
+                                                            <div><strong style="color:#a5b4fc;">"• 0.4 – 0.7+ (Kreativ):"</strong> " Größere sprachliche Varianz für Textentwürfe, Zusammenfassungen oder Brainstorming."</div>
+                                                        </div>
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </div>
+                                    })}
+                                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap; align-items:center;">
+                                        {[(0.0f32, "0.0 (Strikt)"), (0.1f32, "0.1"), (0.2f32, "0.2 (Default)"), (0.4f32, "0.4"), (0.7f32, "0.7 (Kreativ)")].into_iter().map(|(t_val, lbl)| {
+                                            view! {
+                                                <button
+                                                    type="button"
+                                                    style=move || if (temperature_sig.get() - t_val).abs() < 0.02 {
+                                                        "flex:1; min-width:75px; padding:0.38rem 0.5rem; font-size:0.78rem; font-weight:700; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; transition:all 0.15s ease;"
+                                                    } else {
+                                                        "flex:1; min-width:75px; padding:0.38rem 0.5rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; transition:all 0.15s ease;"
+                                                    }
+                                                    on:click=move |_| {
+                                                        set_temperature_sig.set(t_val);
+                                                        save_temperature_to_storage(t_val);
+                                                    }
+                                                >
+                                                    {lbl}
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                        <input
+                                            type="range"
+                                            min="0.0"
+                                            max="1.2"
+                                            step="0.05"
+                                            style="width:110px; accent-color:#6366f1; cursor:pointer;"
+                                            prop:value=move || format!("{:.2}", temperature_sig.get())
+                                            on:input=move |ev| {
+                                                if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                    set_temperature_sig.set(v);
+                                                    save_temperature_to_storage(v);
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        })}
+
+                        // =========================================================================
+                        // TAB 2: Sprachmodell (Lokal, Remote oder Cloud-API)
+                        // =========================================================================
+                        {move || (settings_tab.get() == "llm").then(|| view! {
+                            <div style="display:flex; flex-direction:column; gap:1.05rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; background: rgba(30, 41, 59, 0.65); border: 1px solid #475569; border-radius: 0.65rem; padding: 0.75rem 1rem;">
+                                <div style="font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
                                     {move || if is_en() {
                                         "🤖 Language Model (Local, RunPod GPU or Cloud API)"
                                     } else {
@@ -4529,23 +5769,18 @@ fn App() -> impl IntoView {
                                         class="btn btn-secondary"
                                         style=move || {
                                             let u = llm_base_url_sig.get();
-                                            if u.contains("runpod.net") || u.contains(":8000") {
+                                            if u.contains(":11435") || u.contains("runpod.net") || u.contains(":8000") {
                                                 "padding:0.35rem 0.65rem; font-size:0.76rem; background:#4f46e5; color:#fff; border:1.5px solid #38bdf8; box-shadow:0 0 10px rgba(79,70,229,0.45); font-weight:700;"
                                             } else {
                                                 "padding:0.35rem 0.65rem; font-size:0.76rem;"
                                             }
                                         }
                                         on:click=move |_| {
-                                            set_llm_provider_sig.set("openai_compatible".to_string());
-                                            set_llm_base_url_sig.set("https://DEINE-POD-ID-8000.proxy.runpod.net/v1".to_string());
-                                            set_llm_config_status.set(if is_en() {
-                                                "Preset 'RunPod / Remote vLLM / Ollama' loaded. Enter your RunPod proxy URL or server IP below.".to_string()
-                                            } else {
-                                                "Vorlage 'RunPod / Remote vLLM / Ollama' geladen. Trage deine RunPod-URL oder Server-IP (z.B. http://192.168.1.50:11434/v1) ein.".to_string()
-                                            });
+                                            set_settings_tab.set("runpod".to_string());
+                                            refresh_runpod_status();
                                         }
                                     >
-                                        "🚀 Remote GPU: RunPod / vLLM"
+                                        "🚀 RunPod GPU Cloud (SSH-Tunnel)"
                                     </button>
                                     <button
                                         class="btn btn-secondary"
@@ -4961,52 +6196,905 @@ fn App() -> impl IntoView {
                             {move || (!llm_config_status.get().is_empty()).then(|| view! {
                                 <div class="status-banner">{llm_config_status.get()}</div>
                             })}
+                            </div>
+                        })}
 
-                            // --- Aktive Ports & Schnittstellen-Übersicht ---
-                            <details style="margin-top:0.2rem; border-top:1px solid #334155; padding-top:0.75rem; font-size:0.76rem; color:#94a3b8;">
-                                <summary style="cursor:pointer; color:#cbd5e1; font-weight:600;">
-                                    {move || if is_en() {
-                                        "🔌 View active endpoints & port configuration"
-                                    } else {
-                                        "🔌 Aktive Schnittstellen & Port-Konfiguration anzeigen"
-                                    }}
-                                </summary>
-                                <div style="margin-top:0.55rem; background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.7rem; font-family:monospace; line-height:1.6; color:#e2e8f0;">
+                        // =========================================================================
+                        // TAB 3: RunPod GPU Cloud (1-Klick Pod-Deployment & SSH-Tunnel für LLM & Embedding)
+                        // =========================================================================
+                        {move || (settings_tab.get() == "runpod").then(|| {
+                            let on_ssh_file_change = move |ev: leptos::ev::Event| {
+                                let Some(target) = ev.target() else { return };
+                                let Ok(input_el) = target.dyn_into::<HtmlInputElement>() else { return };
+                                let Some(files) = input_el.files() else { return };
+                                let Some(file) = files.get(0) else { return };
+                                let fname = file.name();
+                                spawn_local(async move {
+                                    if let Some(txt) = read_browser_file_as_text(&file).await {
+                                        set_rp_ssh_key_filename.set(fname);
+                                        set_rp_ssh_key_input.set(txt);
+                                    }
+                                });
+                                input_el.set_value("");
+                            };
+
+                            let save_rp_credentials = move |_| {
+                                let api_k = rp_api_key_input.get();
+                                let ssh_k = rp_ssh_key_input.get();
+                                let ssh_p = rp_ssh_pass_input.get();
+                                let gpu = rp_gpu_type.get();
+                                let en_llm = rp_enable_llm.get();
+                                let mod_name = rp_llm_model.get();
+                                let en_emb = rp_enable_embed.get();
+                                spawn_local(async move {
+                                    let payload = serde_json::json!({
+                                        "api_key": if api_k.trim().is_empty() { None } else { Some(api_k) },
+                                        "ssh_private_key": if ssh_k.trim().is_empty() { None } else { Some(ssh_k) },
+                                        "ssh_passphrase": if ssh_p.is_empty() { None } else { Some(ssh_p) },
+                                        "gpu_type": gpu,
+                                        "enable_llm": en_llm,
+                                        "llm_model": mod_name,
+                                        "enable_embedding": en_emb,
+                                    });
+                                    if let Ok(resp) = Request::post("/v1/runpod/config")
+                                        .header("Content-Type", "application/json")
+                                        .body(payload.to_string())
+                                        .unwrap()
+                                        .send()
+                                        .await
                                     {
-                                        let origin = web_sys::window()
-                                            .and_then(|w| w.location().origin().ok())
-                                            .unwrap_or_else(|| "http://localhost:8080".to_string());
-                                        view! {
-                                            <div>"• 🦀 Leptos WASM Chat-UI  : " {origin.clone()} "/"</div>
-                                            <div>"• Health-Check            : " {origin.clone()} "/health"</div>
-                                            <div>"• Ingestion (JSON)        : POST " {origin.clone()} "/v1/ingest"</div>
-                                            <div>"• File Upload (PDF/MD/TXT): POST " {origin.clone()} "/v1/ingest/file"</div>
-                                            <div>"• Hybrid + Graph Retrieval: POST " {origin.clone()} "/v1/retrieve"</div>
-                                            <div>"• OpenAI Chat Completion  : POST " {origin.clone()} "/v1/chat/completions"</div>
-                                            <div>"• MCP Server (Tool-Call)  : POST " {origin} "/mcp"</div>
+                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                            apply_runpod_json(&json);
+                                            set_rp_api_key_input.set(String::new());
+                                            set_rp_ssh_pass_input.set(String::new());
                                         }
                                     }
-                                    <div style="margin-top:0.5rem; padding-top:0.45rem; border-top:1px dashed #334155; color:#38bdf8; font-family:sans-serif;">
-                                        {move || if is_en() {
-                                            "💡 If port 8080 is busy, ./setup.sh automatically fails over to the next free port – or specify directly: "
-                                        } else {
-                                            "💡 Falls Port 8080 belegt ist, weicht ./setup.sh beim Start automatisch auf den nächsten freien Port aus – oder du gibst deinen Wunsch-Port direkt an: "
-                                        }}
-                                        <code style="background:#1e293b; padding:0.1rem 0.35rem; border-radius:4px; color:#f8fafc;">
-                                            "./setup.sh --port 8090"
-                                        </code>
+                                });
+                            };
+
+                            let start_rp_pod = move |_| {
+                                let api_k = rp_api_key_input.get();
+                                let ssh_k = rp_ssh_key_input.get();
+                                let ssh_p = rp_ssh_pass_input.get();
+                                let gpu = rp_gpu_type.get();
+                                let en_llm = rp_enable_llm.get();
+                                let mod_name = rp_llm_model.get();
+                                let en_emb = rp_enable_embed.get();
+                                spawn_local(async move {
+                                    let payload = serde_json::json!({
+                                        "api_key": if api_k.trim().is_empty() { None } else { Some(api_k) },
+                                        "ssh_private_key": if ssh_k.trim().is_empty() { None } else { Some(ssh_k) },
+                                        "ssh_passphrase": if ssh_p.is_empty() { None } else { Some(ssh_p) },
+                                        "gpu_type": gpu,
+                                        "enable_llm": en_llm,
+                                        "llm_model": mod_name,
+                                        "enable_embedding": en_emb,
+                                    });
+                                    if let Ok(resp) = Request::post("/v1/runpod/start")
+                                        .header("Content-Type", "application/json")
+                                        .body(payload.to_string())
+                                        .unwrap()
+                                        .send()
+                                        .await
+                                    {
+                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                            apply_runpod_json(&json);
+                                            set_rp_api_key_input.set(String::new());
+                                            set_rp_ssh_pass_input.set(String::new());
+                                            refresh_runpod_status();
+                                        }
+                                    }
+                                });
+                            };
+
+                            let stop_rp_pod = move |_| {
+                                spawn_local(async move {
+                                    if let Ok(resp) = Request::post("/v1/runpod/stop").send().await {
+                                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                            apply_runpod_json(&json);
+                                            load_llm_config();
+                                        }
+                                    }
+                                });
+                            };
+
+                            view! {
+                                <div style="display:flex; flex-direction:column; gap:1.1rem;">
+                                    // --- 0. Live Status & 1-Click Pod Steuerung ---
+                                    <div style=move || {
+                                        match rp_phase.get().as_str() {
+                                            "running" => "background: rgba(6, 78, 59, 0.35); border: 1.5px solid #10b981; border-radius: 0.7rem; padding: 1.05rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;",
+                                            "deploying" | "waiting_ssh" | "loading_models" | "stopping" => "background: rgba(120, 53, 15, 0.3); border: 1.5px solid #f59e0b; border-radius: 0.7rem; padding: 1.05rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;",
+                                            "error" => "background: rgba(127, 29, 29, 0.35); border: 1.5px solid #ef4444; border-radius: 0.7rem; padding: 1.05rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;",
+                                            _ => "background: rgba(15, 23, 42, 0.65); border: 1px solid #334155; border-radius: 0.7rem; padding: 1.05rem 1.2rem; display: flex; flex-direction: column; gap: 0.8rem;",
+                                        }
+                                    }>
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.65rem;">
+                                            <div style="display:flex; align-items:center; gap:0.6rem;">
+                                                <span style="font-size:1.35rem;">
+                                                    {move || match rp_phase.get().as_str() {
+                                                        "running" => "🟢",
+                                                        "deploying" | "waiting_ssh" | "loading_models" | "stopping" => "⏳",
+                                                        "error" => "🔴",
+                                                        _ => "🚀",
+                                                    }}
+                                                </span>
+                                                <div>
+                                                    <div style="font-weight:700; font-size:0.95rem; color:#f8fafc;">
+                                                        {move || match rp_phase.get().as_str() {
+                                                            "running" => if is_en() { "RunPod GPU Pod Active & Connected via SSH Tunnel" } else { "RunPod GPU-Pod aktiv & über SSH-Tunnel verbunden" },
+                                                            "deploying" | "waiting_ssh" | "loading_models" => if is_en() { "Deploying RunPod GPU & loading models..." } else { "RunPod GPU-Pod wird gestartet & Modelle geladen..." },
+                                                            "stopping" => if is_en() { "Terminating RunPod Pod..." } else { "RunPod Pod wird beendet..." },
+                                                            "error" => if is_en() { "RunPod Connection Error" } else { "RunPod Hinweis / Fehler" },
+                                                            _ => if is_en() { "On-Demand RunPod GPU (LLM & High-Speed Embedding)" } else { "On-Demand RunPod GPU (Sprachmodell & High-Speed Embedding)" },
+                                                        }}
+                                                    </div>
+                                                    <div style="font-size:0.8rem; color:#cbd5e1; margin-top:0.15rem;">
+                                                        {move || rp_message.get()}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div style="display:flex; align-items:center; gap:0.55rem; flex-wrap:wrap;">
+                                                {move || {
+                                                    let p = rp_phase.get();
+                                                    let is_busy = p == "deploying" || p == "waiting_ssh" || p == "loading_models" || p == "stopping";
+                                                    let is_running = p == "running";
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            class="btn"
+                                                            style="background: linear-gradient(135deg, #4f46e5, #0284c7); padding: 0.55rem 1.05rem; font-size: 0.82rem;"
+                                                            disabled=is_busy
+                                                            on:click=start_rp_pod
+                                                        >
+                                                            {if is_busy {
+                                                                if is_en() { "⏳ Working..." } else { "⏳ Bitte warten..." }
+                                                            } else if is_running {
+                                                                if is_en() { "🔄 Switch / Load Model on Active Pod" } else { "🔄 Modell auf aktivem Pod laden / wechseln" }
+                                                            } else if is_en() {
+                                                                "🚀 Start RunPod GPU Pod & Connect"
+                                                            } else {
+                                                                "🚀 RunPod GPU Pod starten & verbinden"
+                                                            }}
+                                                        </button>
+
+                                                        {(is_running || is_busy || rp_pod_id.get().is_some()).then(|| view! {
+                                                            <button
+                                                                type="button"
+                                                                class="btn-stop-subtle"
+                                                                style="height:auto; padding:0.55rem 0.9rem;"
+                                                                on:click=stop_rp_pod
+                                                            >
+                                                                <span class="stop-square"></span>
+                                                                <span>
+                                                                    {move || if is_en() { "Stop Pod & Return to Mac" } else { "Pod beenden & auf Mac zurückschalten" }}
+                                                                </span>
+                                                            </button>
+                                                        })}
+                                                    }
+                                                }}
+                                            </div>
+                                        </div>
+
+                                        // Live-Metriken des laufenden Pods
+                                        {move || rp_pod_id.get().map(|pid| view! {
+                                            <div style="display:flex; flex-wrap:wrap; gap:0.55rem; padding-top:0.65rem; border-top:1px solid rgba(148,163,184,0.2); font-size:0.76rem;">
+                                                <span class="badge" style="background:#1e293b; color:#38bdf8; border:1px solid #334155;">
+                                                    {format!("🆔 Pod: {}", pid)}
+                                                </span>
+                                                <span class="badge" style="background:#1e293b; color:#c7d2fe; border:1px solid #334155;">
+                                                    {move || format!("🖥️ GPU: {}", rp_gpu_type.get())}
+                                                </span>
+                                                {move || rp_cost_hr.get().map(|c| view! {
+                                                    <span class="badge" style="background:#1e293b; color:#fde68a; border:1px solid #334155;">
+                                                        {format!("💰 ${:.2}/hr", c)}
+                                                    </span>
+                                                })}
+                                                {move || rp_ssh_ep.get().map(|ep| view! {
+                                                    <span class="badge" style="background:#1e293b; color:#94a3b8; border:1px solid #334155; font-family:monospace;">
+                                                        {format!("🔒 SSH: {}", ep)}
+                                                    </span>
+                                                })}
+                                                {move || rp_llm_ready.get().then(|| view! {
+                                                    <span class="badge" style="background:rgba(16,185,129,0.2); color:#6ee7b7; border:1px solid #10b981;">
+                                                        {format!("🤖 LLM: {} (:11435)", rp_llm_model.get())}
+                                                    </span>
+                                                })}
+                                                {move || rp_embed_ready.get().then(|| view! {
+                                                    <span class="badge" style="background:rgba(16,185,129,0.2); color:#6ee7b7; border:1px solid #10b981;">
+                                                        "⚡ BGE-M3 GPU-Embed (:18081)"
+                                                    </span>
+                                                })}
+                                            </div>
+                                        })}
+                                    </div>
+
+                                    // --- 1. GPU-Auswahl & Dienste auf dem Pod (LLM + Embedding) ---
+                                    <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.05rem; display: flex; flex-direction: column; gap: 0.95rem;">
+                                        <div style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
+                                            {move || if is_en() {
+                                                "1. Select GPU & Services on RunPod (Single Pod for LLM + Embedding)"
+                                            } else {
+                                                "1. GPU & Dienste wählen (LLM + Embedding gemeinsam auf einem Pod)"
+                                            }}
+                                        </div>
+
+                                        // GPU Typ
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.4rem;">
+                                                {move || if is_en() {
+                                                    "🖥️ RunPod GPU Model (48 GB VRAM recommended for 14B–32B models + 32k context):"
+                                                } else {
+                                                    "🖥️ RunPod GPU-Typ (48 GB VRAM ideal für qwen3:8b bis qwen3:32b + BGE-M3 parallel):"
+                                                }}
+                                            </label>
+                                            <div style="display:flex; flex-wrap:wrap; gap:0.45rem;">
+                                                {[
+                                                    ("NVIDIA A40", "NVIDIA A40 (48 GB VRAM · ~$0.59/h)"),
+                                                    ("NVIDIA GeForce RTX 4090", "RTX 4090 (24 GB VRAM · ~$0.69/h)"),
+                                                    ("NVIDIA RTX A6000", "RTX A6000 (48 GB VRAM · ~$0.79/h)"),
+                                                    ("NVIDIA L40S", "NVIDIA L40S (48 GB VRAM)"),
+                                                ].into_iter().map(|(gpu_id, gpu_label)| {
+                                                    let gid_check = gpu_id.to_string();
+                                                    let gid_click = gpu_id.to_string();
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            style=move || if rp_gpu_type.get() == gid_check {
+                                                                "flex:1; min-width:170px; padding:0.45rem 0.65rem; font-size:0.78rem; font-weight:700; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer;"
+                                                            } else {
+                                                                "flex:1; min-width:170px; padding:0.45rem 0.65rem; font-size:0.78rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
+                                                            }
+                                                            on:click=move |_| set_rp_gpu_type.set(gid_click.clone())
+                                                        >
+                                                            {gpu_label}
+                                                        </button>
+                                                    }
+                                                }).collect_view()}
+                                            </div>
+                                        </div>
+
+                                        // Checkbox A: Ollama LLM auf RunPod starten
+                                        <div style="background: rgba(30, 41, 59, 0.5); border: 1px solid #334155; border-radius: 0.55rem; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.7rem;">
+                                            <div class="toggle-row">
+                                                <input
+                                                    type="checkbox"
+                                                    id="rp-enable-llm"
+                                                    prop:checked=move || rp_enable_llm.get()
+                                                    on:change=move |ev| {
+                                                        let checked = ev.target().unwrap().unchecked_into::<HtmlInputElement>().checked();
+                                                        set_rp_enable_llm.set(checked);
+                                                    }
+                                                />
+                                                <label for="rp-enable-llm" style="margin:0; font-size:0.85rem; font-weight:600; color:#f8fafc; cursor:pointer;">
+                                                    {move || if is_en() {
+                                                        "🤖 Run Local/Open-Weight LLM (Ollama) on RunPod GPU & switch Chat UI automatically"
+                                                    } else {
+                                                        "🤖 Sprachmodell (Ollama) auf RunPod GPU starten & Chat automatisch umschalten"
+                                                    }}
+                                                </label>
+                                            </div>
+
+                                            {move || rp_enable_llm.get().then(|| view! {
+                                                <div style="display:flex; flex-direction:column; gap:0.5rem; padding-left:1.4rem;">
+                                                    <label style="font-size:0.76rem; color:#94a3b8;">
+                                                        {move || if is_en() {
+                                                            "Model to load into RunPod GPU VRAM (click a preset chip or type any Ollama tag):"
+                                                        } else {
+                                                            "Modell für RunPod GPU auswählen (1-Klick-Vorschlag oder beliebigen Ollama-Namen eintippen):"
+                                                        }}
+                                                    </label>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="qwen3:8b, qwen3:14b, qwen3:32b, deepseek-r1:14b, deepseek-r1:32b"
+                                                        prop:value=move || rp_llm_model.get()
+                                                        on:input=move |ev| set_rp_llm_model.set(event_target_value(&ev))
+                                                    />
+                                                    <div style="display:flex; flex-wrap:wrap; gap:0.4rem;">
+                                                        {[
+                                                            ("qwen3:8b", "⚡ qwen3:8b (~6 GB)"),
+                                                            ("qwen3:14b", "🚀 qwen3:14b (~10 GB)"),
+                                                            ("qwen3:32b", "🧠 qwen3:32b (~20 GB · A40)"),
+                                                            ("deepseek-r1:14b", "🔬 deepseek-r1:14b (~10 GB)"),
+                                                            ("deepseek-r1:32b", "🏛️ deepseek-r1:32b (~20 GB · A40)"),
+                                                            ("qwen2.5:14b", "📘 qwen2.5:14b (~10 GB)"),
+                                                        ].into_iter().map(|(m_tag, m_desc)| {
+                                                            let mt_check = m_tag.to_string();
+                                                            let mt_click = m_tag.to_string();
+                                                            view! {
+                                                                <button
+                                                                    type="button"
+                                                                    style=move || if rp_llm_model.get().trim().eq_ignore_ascii_case(&mt_check) {
+                                                                        "padding:0.3rem 0.65rem; font-size:0.75rem; font-weight:700; border-radius:0.4rem; background:#4f46e5; color:#fff; border:1px solid #38bdf8; cursor:pointer;"
+                                                                    } else {
+                                                                        "padding:0.3rem 0.65rem; font-size:0.75rem; font-weight:500; border-radius:0.4rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer;"
+                                                                    }
+                                                                    on:click=move |_| set_rp_llm_model.set(mt_click.clone())
+                                                                >
+                                                                    {m_desc}
+                                                                </button>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                </div>
+                                            })}
+                                        </div>
+
+                                        // Checkbox B: BAAI/bge-m3 GPU-Embedding mitstarten
+                                        <div style="background: rgba(30, 41, 59, 0.5); border: 1px solid #334155; border-radius: 0.55rem; padding: 0.85rem;">
+                                            <div class="toggle-row">
+                                                <input
+                                                    type="checkbox"
+                                                    id="rp-enable-embed"
+                                                    prop:checked=move || rp_enable_embed.get()
+                                                    on:change=move |ev| {
+                                                        let checked = ev.target().unwrap().unchecked_into::<HtmlInputElement>().checked();
+                                                        set_rp_enable_embed.set(checked);
+                                                    }
+                                                />
+                                                <label for="rp-enable-embed" style="margin:0; font-size:0.85rem; font-weight:600; color:#f8fafc; cursor:pointer;">
+                                                    {move || if is_en() {
+                                                        "⚡ Also run BAAI/bge-m3 (FP16 CUDA) on the same Pod for ultra-fast document uploads (~1.2 GB VRAM)"
+                                                    } else {
+                                                        "⚡ BAAI/bge-m3 GPU-Embedding auf demselben Pod mitstarten (nur ~1,2 GB VRAM · 20× schnellerer Datei-Upload)"
+                                                    }}
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    // --- 2. RunPod API-Key & SSH-Key Konfiguration ---
+                                    <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.05rem; display: flex; flex-direction: column; gap: 0.9rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                                            <div style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
+                                                {move || if is_en() {
+                                                    "2. RunPod API Key & SSH Private Key"
+                                                } else {
+                                                    "2. RunPod API-Key & SSH-Key (Zugangsdaten)"
+                                                }}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                class="btn btn-secondary"
+                                                style="padding:0.32rem 0.75rem; font-size:0.76rem; border-color:#6366f1; color:#c7d2fe;"
+                                                on:click=save_rp_credentials
+                                            >
+                                                {move || if is_en() { "💾 Verify & Save Credentials" } else { "💾 Zugangsdaten prüfen & speichern" }}
+                                            </button>
+                                        </div>
+
+                                        // A. RunPod API Key
+                                        <div>
+                                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.3rem;">
+                                                <label style="font-size:0.78rem; color:#94a3b8;">
+                                                    "RunPod REST API-Key (rpa_...)"
+                                                </label>
+                                                {move || if rp_has_api_key.get() {
+                                                    view! {
+                                                        <span style="font-size:0.72rem; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.35); padding:0.1rem 0.5rem; border-radius:999px;">
+                                                            {move || if is_en() { "🟢 API Key stored" } else { "🟢 RunPod API-Key hinterlegt (.env / DB)" }}
+                                                        </span>
+                                                    }.into_view()
+                                                } else {
+                                                    view! {
+                                                        <span style="font-size:0.72rem; color:#f87171;">
+                                                            {move || if is_en() { "⚠️ No API Key set" } else { "⚠️ Noch kein API-Key hinterlegt" }}
+                                                        </span>
+                                                    }.into_view()
+                                                }}
+                                            </div>
+                                            <div style="display:flex; gap:0.5rem;">
+                                                <input
+                                                    type=move || if rp_show_api_key.get() { "text" } else { "password" }
+                                                    autocomplete="new-password"
+                                                    spellcheck="false"
+                                                    style="font-family:monospace;"
+                                                    placeholder=move || if rp_has_api_key.get() {
+                                                        "•••••••••••••••••••••••• (Leer lassen zum Behalten oder neuen rpa_... Key eingeben)"
+                                                    } else {
+                                                        "rpa_..."
+                                                    }
+                                                    prop:value=move || rp_api_key_input.get()
+                                                    on:input=move |ev| set_rp_api_key_input.set(event_target_value(&ev))
+                                                />
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-secondary"
+                                                    style="padding:0.55rem 0.75rem; font-size:0.78rem; white-space:nowrap;"
+                                                    on:click=move |_| set_rp_show_api_key.update(|v| *v = !*v)
+                                                >
+                                                    {move || if rp_show_api_key.get() { "🙈" } else { "👁️" }}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        // B. SSH Private Key + Datei-Auswahl + optionale Passphrase
+                                        <div style="display:flex; flex-direction:column; gap:0.55rem;">
+                                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                                                <label style="font-size:0.78rem; color:#94a3b8;">
+                                                    "SSH Private Key (z.B. ~/.ssh/id_ed25519_runpod)"
+                                                </label>
+                                                <div style="display:flex; align-items:center; gap:0.45rem;">
+                                                    {move || if rp_has_ssh_key.get() || !rp_ssh_key_input.get().trim().is_empty() {
+                                                        view! {
+                                                            <span style="font-size:0.72rem; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.35); padding:0.1rem 0.5rem; border-radius:999px;">
+                                                                {move || if !rp_ssh_key_filename.get().is_empty() {
+                                                                    format!("🟢 Datei geladen: {}", rp_ssh_key_filename.get())
+                                                                } else if is_en() {
+                                                                    "🟢 SSH Private Key detected".to_string()
+                                                                } else {
+                                                                    "🟢 SSH-Key erkannt (~/.ssh/id_ed25519_runpod)".to_string()
+                                                                }}
+                                                            </span>
+                                                        }.into_view()
+                                                    } else {
+                                                        view! {
+                                                            <span style="font-size:0.72rem; color:#f87171;">
+                                                                "⚠️ Kein SSH-Key gefunden"
+                                                            </span>
+                                                        }.into_view()
+                                                    }}
+                                                    <input
+                                                        type="file"
+                                                        style="display:none;"
+                                                        node_ref=rp_ssh_file_input_ref
+                                                        on:change=on_ssh_file_change
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.25rem 0.65rem; font-size:0.74rem;"
+                                                        on:click=move |_| {
+                                                            if let Some(el) = rp_ssh_file_input_ref.get() {
+                                                                el.click();
+                                                            }
+                                                        }
+                                                    >
+                                                        {move || if is_en() { "📂 Select SSH Key File..." } else { "📂 SSH-Key Datei wählen..." }}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            // Passphrase für den SSH-Key (falls verschlüsselt)
+                                            <div>
+                                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.25rem;">
+                                                    <label style="font-size:0.75rem; color:#94a3b8;">
+                                                        {move || if is_en() {
+                                                            "SSH Key Passphrase (only if your SSH key is password-protected):"
+                                                        } else {
+                                                            "SSH-Key Passphrase (falls dein SSH-Key wie id_ed25519_runpod mit Passwort geschützt ist):"
+                                                        }}
+                                                    </label>
+                                                    {move || if rp_needs_passphrase.get() {
+                                                        view! {
+                                                            <span style="font-size:0.72rem; background:rgba(245, 158, 11, 0.18); color:#fde68a; border:1px solid #f59e0b; padding:0.1rem 0.5rem; border-radius:999px;">
+                                                                {move || if is_en() { "🔑 Passphrase required for this SSH key" } else { "🔑 Passphrase für diesen SSH-Key erforderlich" }}
+                                                            </span>
+                                                        }.into_view()
+                                                    } else if rp_has_passphrase.get() {
+                                                        view! {
+                                                            <span style="font-size:0.72rem; background:rgba(16, 185, 129, 0.15); color:#34d399; border:1px solid rgba(16, 185, 129, 0.35); padding:0.1rem 0.5rem; border-radius:999px;">
+                                                                {move || if is_en() { "🟢 SSH Key unlocked" } else { "🟢 SSH-Key entsperrt" }}
+                                                            </span>
+                                                        }.into_view()
+                                                    } else {
+                                                        view! { <span></span> }.into_view()
+                                                    }}
+                                                </div>
+                                                <div style="display:flex; gap:0.5rem;">
+                                                    <input
+                                                        type=move || if rp_show_ssh_pass.get() { "text" } else { "password" }
+                                                        autocomplete="new-password"
+                                                        placeholder=move || if rp_has_passphrase.get() && !rp_needs_passphrase.get() {
+                                                            "•••••••••••• (Passphrase hinterlegt & gültig)"
+                                                        } else {
+                                                            "Passphrase für id_ed25519_runpod eingeben (falls vorhanden)..."
+                                                        }
+                                                        prop:value=move || rp_ssh_pass_input.get()
+                                                        on:input=move |ev| set_rp_ssh_pass_input.set(event_target_value(&ev))
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        class="btn btn-secondary"
+                                                        style="padding:0.55rem 0.75rem; font-size:0.78rem;"
+                                                        on:click=move |_| set_rp_show_ssh_pass.update(|v| *v = !*v)
+                                                    >
+                                                        {move || if rp_show_ssh_pass.get() { "🙈" } else { "👁️" }}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <details style="font-size:0.75rem; color:#94a3b8;">
+                                                <summary style="cursor:pointer; color:#a5b4fc;">
+                                                    {move || if is_en() {
+                                                        "📋 Optional: Paste SSH Private Key as text (-----BEGIN OPENSSH PRIVATE KEY-----)"
+                                                    } else {
+                                                        "📋 Optional: SSH Private Key direkt als Text einfügen (-----BEGIN OPENSSH PRIVATE KEY-----)"
+                                                    }}
+                                                </summary>
+                                                <textarea
+                                                    style="margin-top:0.4rem; min-height:95px; font-family:monospace; font-size:0.74rem;"
+                                                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+                                                    prop:value=move || rp_ssh_key_input.get()
+                                                    on:input=move |ev| set_rp_ssh_key_input.set(event_target_value(&ev))
+                                                ></textarea>
+                                            </details>
+                                        </div>
                                     </div>
                                 </div>
-                            </details>
+                            }
+                        })}
+
+                        // =========================================================================
+                        // TAB 4: SurrealDB Backup (Vollständiger Export & Import inkl. Vektoren & Graph)
+                        // =========================================================================
+                        {move || (settings_tab.get() == "backup").then(|| {
+                            let on_db_file_change = move |ev: leptos::ev::Event| {
+                                let Some(target) = ev.target() else { return };
+                                let Ok(input_el) = target.dyn_into::<HtmlInputElement>() else { return };
+                                let Some(files) = input_el.files() else { return };
+                                let Some(file) = files.get(0) else { return };
+                                let name = file.name();
+                                let blob: &web_sys::Blob = file.as_ref();
+                                let size_mb = blob.size() / (1024.0 * 1024.0);
+                                let size_str = if size_mb >= 1.0 {
+                                    format!("{:.1} MB", size_mb)
+                                } else {
+                                    format!("{:.0} KB", (blob.size() / 1024.0).max(1.0))
+                                };
+                                set_db_import_file_label.set(format!("{} ({})", name, size_str));
+                                set_db_import_file.set(Some(file));
+                                set_db_backup_status.set(String::new());
+                                input_el.set_value("");
+                            };
+
+                            let run_db_import = move |_| {
+                                let Some(file) = db_import_file.get() else {
+                                    set_db_backup_status.set(if is_en() {
+                                        "⚠️ Please select a .surql backup file first.".to_string()
+                                    } else {
+                                        "⚠️ Bitte zuerst eine .surql Backup-Datei auswählen.".to_string()
+                                    });
+                                    return;
+                                };
+                                let mode = db_import_mode.get();
+                                set_is_importing_db.set(true);
+                                set_db_backup_status.set(if is_en() {
+                                    "⏳ Importing SurrealDB backup (documents, 1024-d HNSW vectors & knowledge graph)...".to_string()
+                                } else {
+                                    "⏳ Importiere SurrealDB-Backup (Dokumente, 1024-d HNSW-Vektoren & Wissensgraph)...".to_string()
+                                });
+
+                                spawn_local(async move {
+                                    let form = FormData::new().unwrap();
+                                    let _ = form.append_with_str("mode", &mode);
+                                    let _ = form.append_with_blob_and_filename("file", file.as_ref(), &file.name());
+
+                                    let req_res = Request::post("/v1/db/import")
+                                        .body(form)
+                                        .unwrap()
+                                        .send()
+                                        .await;
+
+                                    match req_res {
+                                        Ok(resp) if resp.ok() => {
+                                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                                let docs = json["total_documents"].as_u64().unwrap_or(0);
+                                                let chunks = json["total_chunks"].as_u64().unwrap_or(0);
+                                                let batches = json["batches_processed"].as_u64().unwrap_or(1);
+                                                set_db_backup_status.set(if is_en() {
+                                                    format!(
+                                                        "✅ SurrealDB Backup successfully imported ({} batches)! Active knowledge base: {} documents · {} chunks.",
+                                                        batches, docs, chunks
+                                                    )
+                                                } else {
+                                                    format!(
+                                                        "✅ SurrealDB-Backup erfolgreich importiert ({} Batches)! Aktive Wissensdatenbank: {} Dokumente · {} Chunks.",
+                                                        batches, docs, chunks
+                                                    )
+                                                });
+                                                set_db_import_file.set(None);
+                                                set_db_import_file_label.set(String::new());
+                                                refresh_documents();
+                                                refresh_crm_employees();
+                                                refresh_fleet_data();
+                                                refresh_webstore_data();
+                                            }
+                                        }
+                                        Ok(resp) => {
+                                            let err_txt = resp.text().await.unwrap_or_default();
+                                            set_db_backup_status.set(format!("❌ Import-Fehler: {}", err_txt));
+                                        }
+                                        Err(e) => {
+                                            set_db_backup_status.set(format!("❌ Netzwerkfehler beim Import: {}", e));
+                                        }
+                                    }
+                                    set_is_importing_db.set(false);
+                                });
+                            };
+
+                            view! {
+                                <div style="display:flex; flex-direction:column; gap:1.1rem;">
+                                    // --- Aktueller DB-Bestand ---
+                                    <div style="background: rgba(30, 41, 59, 0.65); border: 1px solid #475569; border-radius: 0.65rem; padding: 0.9rem 1.15rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                                        <div>
+                                            <div style="font-size: 0.84rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #818cf8;">
+                                                {move || if is_en() {
+                                                    "💾 SurrealDB 4.0 Knowledge Base Backup & Restore"
+                                                } else {
+                                                    "💾 SurrealDB 4.0 Wissensdatenbank Backup & Wiederherstellung"
+                                                }}
+                                            </div>
+                                            <div style="font-size: 0.76rem; color: #94a3b8; margin-top: 0.2rem;">
+                                                {move || if is_en() {
+                                                    "Includes all documents, chunks, 1024-d BGE-M3 embeddings (no re-embedding needed on import!) and Knowledge Graph edges."
+                                                } else {
+                                                    "Sichert alle Dokumente, Chunks, 1024-d BGE-M3 Vektoren (kein erneutes Embedding beim Import nötig!) und den Wissensgraphen."
+                                                }}
+                                            </div>
+                                        </div>
+                                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                                            <span class="badge" style="background:#1e1b4b; color:#c7d2fe; border:1px solid #4f46e5; padding:0.3rem 0.7rem; font-size:0.78rem;">
+                                                {move || {
+                                                    let d = stored_docs.get().len();
+                                                    let c: usize = stored_docs.get().iter().map(|x| x.chunk_count).sum();
+                                                    if is_en() {
+                                                        format!("📄 {} Docs · 🧩 {} Chunks", d, c)
+                                                    } else {
+                                                        format!("📄 {} Dokumente · 🧩 {} Chunks", d, c)
+                                                    }
+                                                }}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    // --- 1. Export Card ---
+                                    <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.15rem; display: flex; flex-direction: column; gap: 0.85rem;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+                                            <div>
+                                                <div style="font-size: 0.9rem; font-weight: 700; color: #f8fafc;">
+                                                    {move || if is_en() {
+                                                        "📥 1. Export SurrealDB Database (.surql)"
+                                                    } else {
+                                                        "📥 1. SurrealDB Datenbank exportieren (.surql)"
+                                                    }}
+                                                </div>
+                                                <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.25rem; max-width: 560px;">
+                                                    {move || if is_en() {
+                                                        "Downloads a complete SurrealQL snapshot (.surql) of your current knowledge base. API keys and credentials are automatically excluded."
+                                                    } else {
+                                                        "Lädt einen vollständigen SurrealQL-Snapshot (.surql) deiner Wissensdatenbank herunter. API-Keys und Zugangsdaten werden automatisch ausgeschlossen."
+                                                    }}
+                                                </div>
+                                            </div>
+                                            <a
+                                                href="/v1/db/export"
+                                                download="surrealdb_knowledge_backup.surql"
+                                                class="btn"
+                                                style="text-decoration:none; display:inline-flex; align-items:center; gap:0.45rem; background:linear-gradient(135deg, #4f46e5, #0284c7); white-space:nowrap;"
+                                            >
+                                                <span>"📥"</span>
+                                                <span>
+                                                    {move || if is_en() { "Download SurrealDB Backup (.surql)" } else { "SurrealDB-Backup herunterladen (.surql)" }}
+                                                </span>
+                                            </a>
+                                        </div>
+                                    </div>
+
+                                    // --- 2. Import Card ---
+                                    <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.15rem; display: flex; flex-direction: column; gap: 0.95rem;">
+                                        <div>
+                                            <div style="font-size: 0.9rem; font-weight: 700; color: #f8fafc;">
+                                                {move || if is_en() {
+                                                    "📤 2. Import SurrealDB Backup (.surql)"
+                                                } else {
+                                                    "📤 2. SurrealDB-Backup importieren (.surql)"
+                                                }}
+                                            </div>
+                                            <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.25rem;">
+                                                {move || if is_en() {
+                                                    "Restores a previously exported .surql file directly into SurrealDB in seconds (including all precomputed vector embeddings and graph relations)."
+                                                } else {
+                                                    "Stellt eine zuvor exportierte .surql-Datei in wenigen Sekunden direkt in SurrealDB wieder her (inkl. aller vorberechneten Vektor-Embeddings und Graph-Beziehungen)."
+                                                }}
+                                            </div>
+                                        </div>
+
+                                        // Import-Modus Wahl
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.4rem;">
+                                                {move || if is_en() { "Import Mode:" } else { "Import-Modus wählen:" }}
+                                            </label>
+                                            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                                                <button
+                                                    type="button"
+                                                    style=move || if db_import_mode.get() == "merge" {
+                                                        "flex:1; min-width:210px; padding:0.5rem 0.75rem; font-size:0.79rem; font-weight:700; border-radius:0.45rem; background:#4f46e5; color:#fff; border:1px solid #818cf8; cursor:pointer; text-align:left;"
+                                                    } else {
+                                                        "flex:1; min-width:210px; padding:0.5rem 0.75rem; font-size:0.79rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; text-align:left;"
+                                                    }
+                                                    on:click=move |_| set_db_import_mode.set("merge".to_string())
+                                                >
+                                                    {move || if is_en() {
+                                                        "➕ Merge (Keep existing documents & add backup)"
+                                                    } else {
+                                                        "➕ Zusammenführen (Vorhandene Dokumente behalten & Backup ergänzen)"
+                                                    }}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    style=move || if db_import_mode.get() == "replace" {
+                                                        "flex:1; min-width:210px; padding:0.5rem 0.75rem; font-size:0.79rem; font-weight:700; border-radius:0.45rem; background:#b91c1c; color:#fff; border:1px solid #f87171; cursor:pointer; text-align:left;"
+                                                    } else {
+                                                        "flex:1; min-width:210px; padding:0.5rem 0.75rem; font-size:0.79rem; font-weight:500; border-radius:0.45rem; background:#0f172a; color:#cbd5e1; border:1px solid #334155; cursor:pointer; text-align:left;"
+                                                    }
+                                                    on:click=move |_| set_db_import_mode.set("replace".to_string())
+                                                >
+                                                    {move || if is_en() {
+                                                        "🧹 Clean Restore (Clear database before importing backup)"
+                                                    } else {
+                                                        "🧹 Komplett ersetzen (Datenbank vor dem Import leeren)"
+                                                    }}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        // Datei auswählen & Import starten
+                                        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.65rem; background:#0f172a; border:1px solid #334155; border-radius:0.55rem; padding:0.8rem 1rem;">
+                                            <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
+                                                <input
+                                                    type="file"
+                                                    accept=".surql,.sql"
+                                                    style="display:none;"
+                                                    node_ref=db_import_input_ref
+                                                    on:change=on_db_file_change
+                                                />
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-secondary"
+                                                    style="padding:0.45rem 0.85rem; font-size:0.8rem;"
+                                                    disabled=move || is_importing_db.get()
+                                                    on:click=move |_| {
+                                                        if let Some(el) = db_import_input_ref.get() {
+                                                            el.click();
+                                                        }
+                                                    }
+                                                >
+                                                    {move || if is_en() { "📂 Select .surql File..." } else { "📂 .surql Backup-Datei wählen..." }}
+                                                </button>
+                                                <span style="font-size:0.8rem; color:#cbd5e1;">
+                                                    {move || if db_import_file_label.get().is_empty() {
+                                                        if is_en() { "No file selected".to_string() } else { "Noch keine Datei ausgewählt".to_string() }
+                                                    } else {
+                                                        format!("📄 {}", db_import_file_label.get())
+                                                    }}
+                                                </span>
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                class="btn"
+                                                disabled=move || is_importing_db.get() || db_import_file.get().is_none()
+                                                on:click=run_db_import
+                                            >
+                                                {move || if is_importing_db.get() {
+                                                    if is_en() { "⏳ Importing..." } else { "⏳ Importiere Backup..." }
+                                                } else if is_en() {
+                                                    "🚀 Start SurrealDB Import"
+                                                } else {
+                                                    "🚀 Backup jetzt in SurrealDB importieren"
+                                                }}
+                                            </button>
+                                        </div>
+
+                                        {move || (!db_backup_status.get().is_empty()).then(|| view! {
+                                            <div class="status-banner">{db_backup_status.get()}</div>
+                                        })}
+                                    </div>
+                                </div>
+                            }
+                        })}
+
+                        // =========================================================================
+                        // TAB 5: Allgemein & System (Sprache, Aktive Schnittstellen & Ports)
+                        // =========================================================================
+                        {move || (settings_tab.get() == "system").then(|| view! {
+                            <div style="display:flex; flex-direction:column; gap:1.05rem;">
+                                // UI-Sprache (Deutsch / English)
+                                <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 0.85rem 1.05rem;">
+                                    <div>
+                                        <div style="font-size: 0.85rem; font-weight: 600; color: #e2e8f0;">
+                                            {move || if is_en() { "🌐 UI Language / Sprache" } else { "🌐 Chat-UI Sprache / Language" }}
+                                        </div>
+                                        <div style="font-size: 0.74rem; color: #94a3b8; margin-top: 0.15rem;">
+                                            {move || if is_en() { "Switch all menus, tooltips, and status messages between German and English." } else { "Wechselt alle Menüs, Erklärungen und Statusanzeigen zwischen Deutsch und Englisch." }}
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; gap: 0.45rem;">
+                                        <button
+                                            class="btn btn-secondary"
+                                            style=move || if !is_en() {
+                                                "padding: 0.38rem 0.85rem; font-size: 0.8rem; background: #4f46e5; color: #fff; border-color: #818cf8;"
+                                            } else {
+                                                "padding: 0.38rem 0.85rem; font-size: 0.8rem;"
+                                            }
+                                            on:click=move |_| {
+                                                set_ui_lang.set("de".to_string());
+                                                save_lang_to_storage("de");
+                                            }
+                                        >
+                                            "🇩🇪 Deutsch"
+                                        </button>
+                                        <button
+                                            class="btn btn-secondary"
+                                            style=move || if is_en() {
+                                                "padding: 0.38rem 0.85rem; font-size: 0.8rem; background: #4f46e5; color: #fff; border-color: #818cf8;"
+                                            } else {
+                                                "padding: 0.38rem 0.85rem; font-size: 0.8rem;"
+                                            }
+                                            on:click=move |_| {
+                                                set_ui_lang.set("en".to_string());
+                                                save_lang_to_storage("en");
+                                            }
+                                        >
+                                            "🇬🇧 English"
+                                        </button>
+                                    </div>
+                                </div>
+
+                                // Aktive Ports & Schnittstellen-Übersicht
+                                <div style="background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 0.65rem; padding: 1.05rem; display: flex; flex-direction: column; gap: 0.65rem;">
+                                    <div style="font-size: 0.82rem; font-weight: 700; color: #818cf8; text-transform: uppercase; letter-spacing: 0.04em;">
+                                        {move || if is_en() {
+                                            "🔌 Active Endpoints & Port Configuration"
+                                        } else {
+                                            "🔌 Aktive Schnittstellen & Port-Konfiguration"
+                                        }}
+                                    </div>
+                                    <div style="background:#0f172a; border:1px solid #334155; border-radius:0.5rem; padding:0.85rem; font-family:monospace; font-size:0.78rem; line-height:1.7; color:#e2e8f0;">
+                                        {
+                                            let origin = web_sys::window()
+                                                .and_then(|w| w.location().origin().ok())
+                                                .unwrap_or_else(|| "http://localhost:8080".to_string());
+                                            view! {
+                                                <div>"• 🦀 Leptos WASM Chat-UI  : " {origin.clone()} "/"</div>
+                                                <div>"• Health-Check            : " {origin.clone()} "/health"</div>
+                                                <div>"• Ingestion (JSON)        : POST " {origin.clone()} "/v1/ingest"</div>
+                                                <div>"• File Upload (PDF/XML/MD): POST " {origin.clone()} "/v1/ingest/file"</div>
+                                                <div>"• Hybrid + Graph Retrieval: POST " {origin.clone()} "/v1/retrieve"</div>
+                                                <div>"• OpenAI Chat Completion  : POST " {origin.clone()} "/v1/chat/completions"</div>
+                                                <div>"• RunPod Cloud GPU API    : GET/POST " {origin.clone()} "/v1/runpod/{status,start,stop}"</div>
+                                                <div>"• MCP Server (Tool-Call)  : POST " {origin} "/mcp"</div>
+                                            }
+                                        }
+                                        <div style="margin-top:0.6rem; padding-top:0.55rem; border-top:1px dashed #334155; color:#38bdf8; font-family:sans-serif; font-size:0.76rem;">
+                                            {move || if is_en() {
+                                                "💡 If port 8080 is busy, ./setup.sh automatically fails over to the next free port – or specify directly: "
+                                            } else {
+                                                "💡 Falls Port 8080 belegt ist, weicht ./setup.sh beim Start automatisch auf den nächsten freien Port aus – oder du gibst deinen Wunsch-Port direkt an: "
+                                            }}
+                                            <code style="background:#1e293b; padding:0.1rem 0.35rem; border-radius:4px; color:#f8fafc;">
+                                                "./setup.sh --port 8090"
+                                            </code>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        })}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
             })}
 
-            // --- Modal-Dialog: Integrierter Fullscreen PDF-Viewer ---
+            // --- Modal-Dialog: Integrierter Fullscreen Dokument-Viewer (PDF / XML / Markdown / Text) ---
             {move || viewing_pdf_doc.get().map(|(pdf_doc_id, pdf_doc_title)| {
                 let pdf_url = format!("/v1/documents/{}/file", pdf_doc_id);
                 let pdf_url_tab = pdf_url.clone();
+                let (modal_icon, _, _, _) = doc_format_labels(&pdf_doc_title, false);
+                let title_for_close = pdf_doc_title.clone();
                 view! {
                     <div
                         class="modal-backdrop fullscreen"
@@ -5019,7 +7107,7 @@ fn App() -> impl IntoView {
                         >
                             <div class="modal-header">
                                 <h2 style="display:flex; align-items:center; gap:0.55rem;">
-                                    <span>"📄"</span>
+                                    <span>{modal_icon}</span>
                                     <span>{pdf_doc_title}</span>
                                     <span style="font-size:0.75rem; font-family:monospace; color:#64748b; font-weight:400;">
                                         {format!("({})", pdf_doc_id)}
@@ -5039,7 +7127,7 @@ fn App() -> impl IntoView {
                                         style="padding: 0.35rem 0.75rem; font-size: 0.8rem;"
                                         on:click=move |_| set_viewing_pdf_doc.set(None)
                                     >
-                                        {move || if is_en() { "✕ Close PDF" } else { "✕ PDF schließen" }}
+                                        {move || doc_format_labels(&title_for_close, is_en()).3}
                                     </button>
                                 </div>
                             </div>
@@ -5047,7 +7135,7 @@ fn App() -> impl IntoView {
                                 <iframe
                                     src=pdf_url
                                     style="width:100%; height:100%; flex:1; border:none; background:#1e293b;"
-                                    title="PDF Document Viewer"
+                                    title="Document Viewer"
                                 ></iframe>
                             </div>
                         </div>

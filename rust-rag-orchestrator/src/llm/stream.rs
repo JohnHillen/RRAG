@@ -31,7 +31,8 @@ impl LlmClient {
             let temp = temperature.unwrap_or(0.2);
 
             if provider == "ollama"
-                || (provider == "openai_compatible" && cfg.llm_base_url.contains(":11434"))
+                || (provider == "openai_compatible"
+                    && (cfg.llm_base_url.contains(":11434") || cfg.llm_base_url.contains(":11435")))
             {
                 if let Err(e) = client
                     .stream_ollama_native(&cfg, &messages, &model, temp, num_ctx, think, &tx)
@@ -214,6 +215,7 @@ impl LlmClient {
 
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
+        let mut in_thinking = false;
 
         while let Some(chunk_res) = stream.next().await {
             let bytes = chunk_res?;
@@ -226,17 +228,48 @@ impl LlmClient {
                 if let Some(data_str) = line.strip_prefix("data: ") {
                     let trimmed = data_str.trim();
                     if trimmed == "[DONE]" {
+                        if in_thinking {
+                            let _ = tx.send(Ok("\n</think>\n\n".to_string())).await;
+                        }
                         return Ok(());
                     }
                     if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-                        if let Some(tok) = val["choices"][0]["delta"]["content"].as_str() {
-                            if !tok.is_empty() && tx.send(Ok(tok.to_string())).await.is_err() {
-                                return Ok(());
+                        let delta = &val["choices"][0]["delta"];
+                        if let Some(think_tok) = delta["reasoning_content"]
+                            .as_str()
+                            .or_else(|| delta["reasoning"].as_str())
+                        {
+                            if !think_tok.is_empty() {
+                                if !in_thinking {
+                                    in_thinking = true;
+                                    if tx.send(Ok("<think>\n".to_string())).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                                if tx.send(Ok(think_tok.to_string())).await.is_err() {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        if let Some(tok) = delta["content"].as_str() {
+                            if !tok.is_empty() {
+                                if in_thinking {
+                                    in_thinking = false;
+                                    if tx.send(Ok("\n</think>\n\n".to_string())).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                                if tx.send(Ok(tok.to_string())).await.is_err() {
+                                    return Ok(());
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+        if in_thinking {
+            let _ = tx.send(Ok("\n</think>\n\n".to_string())).await;
         }
         Ok(())
     }

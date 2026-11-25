@@ -1,9 +1,17 @@
-use crate::{db, ingestion::InferenceClient, pdf, AppState};
+use crate::{
+    db,
+    ingestion::{
+        pipelines::{self, IngestionPipelineKind},
+        InferenceClient,
+    },
+    pdf, AppState,
+};
 use anyhow::Result;
 use axum::{
+    body::Body,
     extract::{Multipart, Path, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -22,6 +30,8 @@ pub struct IngestJsonRequest {
     pub replace_revision: bool,
     #[serde(default)]
     pub extract_graph: Option<bool>,
+    #[serde(default)]
+    pub pipeline: Option<String>,
 }
 
 fn default_source() -> String {
@@ -74,12 +84,92 @@ pub async fn deduplicate_documents_handler(State(state): State<AppState>) -> imp
     }
 }
 
+/// Exports the full SurrealDB knowledge base as a downloadable `.surql` backup file (`GET /v1/db/export`)
+pub async fn export_surreal_db_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match state.db.export_database_surql().await {
+        Ok(surql_data) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/octet-stream; charset=utf-8")
+            .header(
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"surrealdb_knowledge_backup.surql\"",
+            )
+            .body(Body::from(surql_data))
+            .unwrap(),
+        Err(e) => Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "error": e.to_string() }).to_string()))
+            .unwrap(),
+    }
+}
+
+/// Imports a `.surql` backup dump into SurrealDB (`POST /v1/db/import`)
+pub async fn import_surreal_db_handler(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let mut surql_content = String::new();
+    let mut clean_before_import = false;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "mode" {
+            if let Ok(txt) = field.text().await {
+                clean_before_import = txt.trim().eq_ignore_ascii_case("replace")
+                    || txt.trim().eq_ignore_ascii_case("clean");
+            }
+            continue;
+        }
+        if let Ok(bytes) = field.bytes().await {
+            if !bytes.is_empty() {
+                surql_content = String::from_utf8_lossy(&bytes).into_owned();
+            }
+        }
+    }
+
+    if surql_content.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Keine gültige .surql Backup-Datei im Upload gefunden." })),
+        );
+    }
+
+    match state
+        .db
+        .import_database_surql(&surql_content, clean_before_import)
+        .await
+    {
+        Ok((batches, total_docs, total_chunks)) => {
+            info!(
+                "SurrealDB backup imported ({} batches, clean_before={}) -> {} docs, {} chunks in DB",
+                batches, clean_before_import, total_docs, total_chunks
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "imported",
+                    "clean_before_import": clean_before_import,
+                    "batches_processed": batches,
+                    "total_documents": total_docs,
+                    "total_chunks": total_chunks
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
 /// Ingests raw text/markdown payload (`POST /v1/ingest`)
 pub async fn ingest_json_handler(
     State(state): State<AppState>,
     Json(req): Json<IngestJsonRequest>,
 ) -> impl IntoResponse {
     let full_title = format_title_with_category(&req.title, req.category.as_deref());
+    let pipeline_kind = IngestionPipelineKind::from_str_opt(req.pipeline.as_deref());
     match process_document_ingestion(
         &state,
         None,
@@ -89,6 +179,7 @@ pub async fn ingest_json_handler(
         req.replace_revision,
         req.category.as_deref(),
         req.extract_graph,
+        pipeline_kind,
         None,
     )
     .await
@@ -101,7 +192,7 @@ pub async fn ingest_json_handler(
     }
 }
 
-/// Multipart file upload handler (PDF, HTML, Markdown, TXT) (`POST /v1/ingest/file`)
+/// Multipart file upload handler (PDF, XML, HTML, Markdown, TXT) (`POST /v1/ingest/file`)
 pub async fn ingest_file_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -110,6 +201,7 @@ pub async fn ingest_file_handler(
     let mut category: Option<String> = None;
     let mut replace_revision = true;
     let mut extract_graph: Option<bool> = None;
+    let mut pipeline_str: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let field_name = field.name().unwrap_or_default().to_string();
@@ -118,6 +210,15 @@ pub async fn ingest_file_handler(
                 let trimmed = txt.trim().to_string();
                 if !trimmed.is_empty() {
                     category = Some(trimmed);
+                }
+            }
+            continue;
+        }
+        if field_name == "pipeline" {
+            if let Ok(txt) = field.text().await {
+                let trimmed = txt.trim().to_string();
+                if !trimmed.is_empty() {
+                    pipeline_str = Some(trimmed);
                 }
             }
             continue;
@@ -166,9 +267,18 @@ pub async fn ingest_file_handler(
         let full_title = format_title_with_category(&raw_filename, category.as_deref());
         let file_hash_id = db::content_hash_id(&file_bytes);
 
-        if extract_graph != Some(true) {
-            if let Ok(existing_chunks) = state.db.count_chunks_for_doc(&file_hash_id).await {
-                if existing_chunks > 0 {
+        if let Ok(existing_chunks) = state.db.count_chunks_for_doc(&file_hash_id).await {
+            if existing_chunks > 0 {
+                let can_skip = if extract_graph == Some(true) {
+                    state
+                        .db
+                        .doc_has_graph_relations(&file_hash_id)
+                        .await
+                        .unwrap_or(false)
+                } else {
+                    true
+                };
+                if can_skip {
                     info!(
                         "File '{}' (Hash: {}) already exists with {} chunks in SurrealDB -> skipping.",
                         full_title, file_hash_id, existing_chunks
@@ -194,8 +304,13 @@ pub async fn ingest_file_handler(
             None
         };
         let fname_clone = raw_filename.clone();
-        let extraction_res = tokio::task::spawn_blocking(move || {
-            InferenceClient::extract_text_from_bytes(&fname_clone, &file_bytes)
+        let pipeline_kind =
+            IngestionPipelineKind::from_str_opt(pipeline_str.as_deref()).resolve(&raw_filename, &file_bytes);
+        let extraction_res = tokio::task::spawn_blocking(move || match pipeline_kind {
+            IngestionPipelineKind::LegalStatute => {
+                pipelines::legal::extract_legal_document_text(&fname_clone, &file_bytes)
+            }
+            _ => InferenceClient::extract_text_from_bytes(&fname_clone, &file_bytes),
         })
         .await
         .unwrap_or_else(|e| Err(anyhow::anyhow!("Text extraction task error: {}", e)));
@@ -211,6 +326,7 @@ pub async fn ingest_file_handler(
                     replace_revision,
                     category.as_deref(),
                     extract_graph,
+                    pipeline_kind,
                     raw_pdf_b64.as_deref(),
                 )
                 .await
@@ -279,7 +395,8 @@ fn format_title_with_category(title: &str, category: Option<&str>) -> String {
     }
 }
 
-/// Shared document ingestion logic (content-hash check -> revision replacement -> chunking -> embedding -> SurrealDB)
+/// Shared document ingestion logic (content-hash check -> pipeline execution -> embedding -> SurrealDB)
+#[allow(clippy::too_many_arguments)]
 async fn process_document_ingestion(
     state: &AppState,
     explicit_doc_id: Option<String>,
@@ -289,14 +406,24 @@ async fn process_document_ingestion(
     replace_revision: bool,
     category: Option<&str>,
     extract_graph: Option<bool>,
+    pipeline_kind: IngestionPipelineKind,
     raw_pdf_b64: Option<&str>,
 ) -> Result<Value> {
     let text_hash_id = db::content_hash_id(text.trim().as_bytes());
     let doc_id = explicit_doc_id.unwrap_or_else(|| text_hash_id.clone());
 
-    if extract_graph != Some(true) {
-        if let Ok(existing) = state.db.count_chunks_for_doc(&doc_id).await {
-            if existing > 0 {
+    if let Ok(existing) = state.db.count_chunks_for_doc(&doc_id).await {
+        if existing > 0 {
+            let can_skip = if extract_graph == Some(true) {
+                state
+                    .db
+                    .doc_has_graph_relations(&doc_id)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                true
+            };
+            if can_skip {
                 return Ok(json!({
                     "status": "skipped_duplicate",
                     "skipped_duplicate": true,
@@ -311,39 +438,28 @@ async fn process_document_ingestion(
         }
     }
 
-    let chunks_text = state
-        .inference
-        .semantic_chunk_text_with_title(Some(title), text);
-    if chunks_text.is_empty() {
-        anyhow::bail!("Document does not contain any usable text.");
-    }
+    let t_start = std::time::Instant::now();
+    let prepared =
+        pipelines::run_text_ingestion_pipeline(state, pipeline_kind, title, text, extract_graph)
+            .await?;
+    let pipeline_ms = t_start.elapsed().as_millis();
 
-    let embeddings = state.inference.embed_texts(&chunks_text).await?;
-    let mut indexed_chunks = Vec::with_capacity(chunks_text.len());
-    for (idx, (chunk_str, emb)) in chunks_text.into_iter().zip(embeddings.into_iter()).enumerate() {
+    let t_emb = std::time::Instant::now();
+    let embeddings = state.inference.embed_texts(&prepared.chunks).await?;
+    let embed_ms = t_emb.elapsed().as_millis();
+    let mut indexed_chunks = Vec::with_capacity(prepared.chunks.len());
+    for (idx, (chunk_str, emb)) in prepared
+        .chunks
+        .into_iter()
+        .zip(embeddings.into_iter())
+        .enumerate()
+    {
         indexed_chunks.push((idx, chunk_str, emb));
     }
 
-    let (mut entities, mut relations) = state.llm.extract_graph_entities(text, extract_graph).await?;
-
-    if let Some(cat) = category.map(|c| c.trim()).filter(|c| !c.is_empty()) {
-        if extract_graph.unwrap_or(state.config.enable_graph_extraction) {
-            for (ent_name, _, _) in &entities {
-                if !ent_name.eq_ignore_ascii_case(cat) {
-                    relations.push((
-                        ent_name.clone(),
-                        "belongs_to_project".to_string(),
-                        cat.to_string(),
-                    ));
-                }
-            }
-            entities.push((
-                cat.to_string(),
-                "Project/Folder".to_string(),
-                Some(format!("Parent Project / Category ({})", cat)),
-            ));
-        }
-    }
+    let entities = prepared.entities;
+    let relations = prepared.relations;
+    let _ = category;
 
     let mut replaced_revision = false;
     if replace_revision {
@@ -358,6 +474,7 @@ async fn process_document_ingestion(
         }
     }
 
+    let t_db = std::time::Instant::now();
     state
         .db
         .insert_document_and_chunks(
@@ -370,6 +487,18 @@ async fn process_document_ingestion(
             raw_pdf_b64,
         )
         .await?;
+    let db_ms = t_db.elapsed().as_millis();
+    info!(
+        "Indexed '{}' via pipeline='{}' ({} chunks, {} entities, {} relations) -> pipeline={}ms | embed={}ms | surrealdb={}ms",
+        title,
+        prepared.pipeline_used,
+        indexed_chunks.len(),
+        entities.len(),
+        relations.len(),
+        pipeline_ms,
+        embed_ms,
+        db_ms
+    );
 
     Ok(json!({
         "status": "indexed",

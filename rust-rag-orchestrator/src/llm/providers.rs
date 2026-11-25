@@ -51,7 +51,7 @@ impl LlmClient {
                     .await
             }
             _ => {
-                if cfg.llm_base_url.contains(":11434") {
+                if cfg.llm_base_url.contains(":11434") || cfg.llm_base_url.contains(":11435") {
                     self.call_ollama_native(&cfg, messages, model, temp, num_ctx, think)
                         .await
                 } else {

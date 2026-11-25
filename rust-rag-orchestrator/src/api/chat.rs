@@ -64,7 +64,7 @@ pub async fn get_llm_config_handler(State(state): State<AppState>) -> impl IntoR
         "available_models": available_models,
         "orchestrator_port": state.config.orchestrator_port,
         "surreal_url": state.config.surreal_url,
-        "tei_embed_url": state.config.tei_embed_url,
+        "tei_embed_url": state.inference.get_embed_url(),
         "tei_rerank_url": state.config.tei_rerank_url,
         "tei_rerank_fast_url": state.config.tei_rerank_fast_url
     }))
@@ -220,9 +220,10 @@ async fn prepare_augmented_chat_context(
 
     if !retrieved_sources.is_empty() {
         let context_block = LlmClient::format_rag_context(&retrieved_sources);
+        let src_count = retrieved_sources.len();
         let system_instruction = format!(
-            "You are an accurate AI knowledge assistant. Answer the user's question concisely and accurately based on the following sources (attached file and/or SurrealDB knowledge base). Cite sources using [Source X].\n\n{}",
-            context_block
+            "You are an accurate AI knowledge assistant. Always reason (including inside <think>) and answer in the same language as the user's question. Base your answer strictly and completely on the provided sources ([Source 1] through [Source {}]), paying close attention to every subsection, exact terminology, and cross-references. Cite sources using [Source X].",
+            src_count
         );
         augmented_messages.insert(
             0,
@@ -231,6 +232,21 @@ async fn prepare_augmented_chat_context(
                 content: system_instruction,
             },
         );
+
+        // Also embed the RAG sources directly inside the final user turn so reasoning models
+        // without a dedicated system-role boundary (such as DeepSeek-R1, whose template places
+        // system text raw before `<｜User｜>`) attend to all sources and the user's language.
+        if let Some(last_user_msg) = augmented_messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == "user")
+        {
+            let original_question = last_user_msg.content.clone();
+            last_user_msg.content = format!(
+                "{}\n---\nQuestion / Anfrage:\n{}\n\n(Instruction: Answer strictly based on [Source 1] through [Source {}] above, cite every used source as [Source X], and write both your <think> reasoning and your final answer in the exact same language as the Question / Anfrage.)",
+                context_block, original_question, src_count
+            );
+        }
     }
 
     (augmented_messages, retrieved_sources, retrieval_metrics)
