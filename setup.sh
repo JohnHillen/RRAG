@@ -3,9 +3,10 @@
 # setup.sh - Automated Setup & Deployment Script
 # 100% Rust RAG & GraphRAG Stack (SurrealDB + Hugging Face TEI + Axum Orchestrator)
 # Supports:
+#   - Container Runtimes: Docker / Colima (--colima / --docker) & Podman (--podman)
 #   - Apple Silicon M1–M6 Metal GPU (--mode metal)
 #   - NVIDIA CUDA GPU (--mode gpu)
-#   - Pure CPU mode in Docker (--mode cpu)
+#   - Pure CPU mode (--mode cpu)
 # License: MIT / Apache 2.0
 # ==============================================================================
 
@@ -18,8 +19,18 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+
 MODE=""
 PRESET=""
+RUNTIME_ARG=""
+CONTAINER_RUNTIME=""
+CONTAINER_CLI=""
+COMPOSE_CMD=()
+HOST_ALIAS="host.docker.internal"
 LLM_MODEL_ARG=""
 LLM_PROVIDER_ARG=""
 LLM_URL_ARG=""
@@ -33,6 +44,7 @@ SHOW_STATUS=false
 RESET_DB=false
 EXPORT_FILE=""
 IMPORT_FILE=""
+OS_TYPE="$(uname -s)"
 
 usage() {
     cat <<EOF
@@ -44,13 +56,21 @@ usage() {
 USAGE:
   ./setup.sh [OPTIONS]
 
+CONTAINER RUNTIME:
+  --podman               Use Podman (+ Podman Machine on macOS).
+  --colima               Use Colima + Docker CLI (macOS lightweight VM).
+  --docker               Use Docker Engine / Docker Desktop.
+  --runtime <type>       Explicitly set runtime: podman | colima | docker.
+                         (Saved to .env as CONTAINER_RUNTIME; prompted once on
+                         macOS if unset and no flag is provided).
+
 COMPUTE MODES (--mode):
   --mode metal           Apple Silicon (M1–M6): Runs SurrealDB & Orchestrator
-                         in Docker (arm64) and native TEI Embedding/Reranker
+                         in containers (arm64) and native TEI Embedding/Reranker
                          servers on macOS with FP16 Metal GPU acceleration.
-  --mode gpu             NVIDIA GPU (CUDA): Runs all components in Docker
+  --mode gpu             NVIDIA GPU (CUDA): Runs all components in containers
                          with NVIDIA Container Runtime passthrough.
-  --mode cpu             Pure CPU mode: Runs all components in Docker
+  --mode cpu             Pure CPU mode: Runs all components in containers
                          (AVX2 / ARM64 optimized, no GPU required).
                          (Auto-detected if omitted).
 
@@ -71,7 +91,8 @@ LLM CONFIGURATION:
                          • anthropic         (Anthropic Claude API)
                          • gemini_native     (Google Gemini REST API)
                          • none              (Retrieval-only mode without LLM)
-  --llm-url <url>        Sets LLM base URL (e.g. http://host.docker.internal:11434/v1).
+  --llm-url <url>        Sets LLM base URL (e.g. http://host.docker.internal:11434/v1
+                         or http://host.containers.internal:11434/v1 for Podman).
 
 PORT CONFIGURATION (Auto-fallback to next free port if occupied):
   --port <num>           Sets main port for Chat UI, REST API & MCP (Default: 8080).
@@ -87,7 +108,7 @@ MANAGEMENT, BACKUP & MAINTENANCE:
   --import <file.surql>  Imports a SurrealDB backup (e.g. after moving from
                          MacBook to RunPod GPU server) without re-embedding.
   --status               Displays live status of all services, ports & models.
-  --stop                 Stops all Docker containers, terminates native Metal
+  --stop                 Stops all containers, terminates native Metal
                          inference processes, and frees Ollama memory.
                          (SurrealDB volume data remains intact!).
   --reset-db             Stops stack and completely deletes the SurrealDB
@@ -96,6 +117,8 @@ MANAGEMENT, BACKUP & MAINTENANCE:
 
 EXAMPLES:
   ./setup.sh                                      # Automatic start (detects Apple Silicon / GPU / CPU)
+  ./setup.sh --podman                             # Start with Podman runtime
+  ./setup.sh --colima                             # Start with Colima + Docker CLI
   ./setup.sh --export backup.surql                # Save complete DB backup for server migration
   ./setup.sh --import backup.surql                # Restore DB backup on new server (e.g. RunPod)
   ./setup.sh --llm-model qwen2.5:7b               # Start with local Ollama model
@@ -115,6 +138,22 @@ while [[ $# -gt 0 ]]; do
         --preset)
             PRESET="$2"
             shift 2
+            ;;
+        --runtime)
+            RUNTIME_ARG="$2"
+            shift 2
+            ;;
+        --podman)
+            RUNTIME_ARG="podman"
+            shift
+            ;;
+        --colima)
+            RUNTIME_ARG="colima"
+            shift
+            ;;
+        --docker)
+            RUNTIME_ARG="docker"
+            shift
             ;;
         --llm-model)
             LLM_MODEL_ARG="$2"
@@ -190,6 +229,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate explicit --runtime argument if provided
+if [[ -n "$RUNTIME_ARG" ]]; then
+    case "$RUNTIME_ARG" in
+        podman|colima|docker) ;;
+        *)
+            log_error "Unsupported container runtime: '$RUNTIME_ARG'. Use 'podman', 'colima', or 'docker'."
+            exit 1
+            ;;
+    esac
+fi
+
+# ==============================================================================
+# Helper Functions: Runtime Detection, Compose Execution & Metal Cleanup
+# ==============================================================================
+
 stop_metal_processes() {
     if [[ -d .pids ]]; then
         for pidfile in .pids/*.pid; do
@@ -204,27 +258,101 @@ stop_metal_processes() {
     fi
 }
 
+detect_podman_compose_cmd() {
+    if command -v podman &> /dev/null && podman compose version &> /dev/null 2>&1; then
+        COMPOSE_CMD=(podman compose)
+        return 0
+    elif command -v podman-compose &> /dev/null; then
+        COMPOSE_CMD=(podman-compose)
+        return 0
+    fi
+    return 1
+}
+
+detect_docker_compose_cmd() {
+    if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
+        COMPOSE_CMD=(docker compose)
+        return 0
+    elif command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD=(docker-compose)
+        return 0
+    fi
+    return 1
+}
+
+# Runs compose down without starting any stopped VM (used by --stop and --reset-db)
+compose_down_active() {
+    local with_volumes=false
+    if [[ "${1:-}" == "-v" ]]; then
+        with_volumes=true
+    fi
+    local stopped_any=false
+
+    # Check Podman if requested or running
+    if [[ "${RUNTIME_ARG:-${CONTAINER_RUNTIME:-}}" == "podman" ]] || \
+       (command -v podman &> /dev/null && podman info &> /dev/null 2>&1); then
+        if detect_podman_compose_cmd; then
+            if [[ "$with_volumes" == "true" ]]; then
+                "${COMPOSE_CMD[@]}" --profile cpu --profile gpu down -v 2>/dev/null \
+                    || "${COMPOSE_CMD[@]}" down -v 2>/dev/null \
+                    || true
+            else
+                "${COMPOSE_CMD[@]}" --profile cpu --profile gpu down 2>/dev/null \
+                    || "${COMPOSE_CMD[@]}" down 2>/dev/null \
+                    || true
+            fi
+            stopped_any=true
+        fi
+    fi
+
+    # Check Docker / Colima if requested or running
+    if [[ "${RUNTIME_ARG:-${CONTAINER_RUNTIME:-}}" != "podman" ]] && \
+       command -v docker &> /dev/null && docker info &> /dev/null 2>&1; then
+        if detect_docker_compose_cmd; then
+            if [[ "$with_volumes" == "true" ]]; then
+                "${COMPOSE_CMD[@]}" --profile cpu --profile gpu down -v 2>/dev/null \
+                    || "${COMPOSE_CMD[@]}" down -v 2>/dev/null \
+                    || true
+            else
+                "${COMPOSE_CMD[@]}" --profile cpu --profile gpu down 2>/dev/null \
+                    || "${COMPOSE_CMD[@]}" down 2>/dev/null \
+                    || true
+            fi
+            stopped_any=true
+        fi
+    fi
+
+    if [[ "$stopped_any" == "false" ]]; then
+        log_warn "No running container engine detected; skipped container shutdown."
+    fi
+}
+
+# ==============================================================================
+# Early Management Commands (No interactive prompts, no VM startup)
+# ==============================================================================
+
 if [[ "$STOP_ALL" == "true" ]]; then
     echo -e "${BLUE}Stopping all services...${NC}"
     stop_metal_processes
     if [[ -f .env ]]; then
         source .env
         if [[ "${LLM_PROVIDER:-}" == "openai_compatible" ]] && [[ "${LLM_BASE_URL:-}" == *"11434"* ]]; then
-            echo -e "${YELLOW}Releasing Ollama model memory (${LLM_MODEL})...${NC}"
-            curl -sf http://localhost:11434/api/generate -d "{\"model\": \"${LLM_MODEL}\", \"keep_alive\": 0}" > /dev/null 2>&1 || true
+            echo -e "${YELLOW}Releasing Ollama model memory (${LLM_MODEL:-})...${NC}"
+            curl -sf http://localhost:11434/api/generate -d "{\"model\": \"${LLM_MODEL:-}\", \"keep_alive\": 0}" > /dev/null 2>&1 || true
         fi
     fi
-    docker compose --profile cpu --profile gpu down
-    echo -e "${GREEN}[OK] All Docker containers and native Metal processes stopped.${NC}"
+    compose_down_active
+    echo -e "${GREEN}[OK] All containers and native Metal processes stopped.${NC}"
     exit 0
 fi
 
 if [[ "$RESET_DB" == "true" ]]; then
+    [[ -f .env ]] && source .env
     echo -e "${RED}[WARNING] This will permanently delete all stored documents, vectors, and graphs in SurrealDB!${NC}"
     read -r -p "Are you sure you want to reset the database? [y/N]: " confirm_reset
     if [[ "$confirm_reset" =~ ^[yYjJ]$ ]]; then
         stop_metal_processes
-        docker compose --profile cpu --profile gpu down -v
+        compose_down_active -v
         echo -e "${GREEN}[OK] SurrealDB volume deleted. Run './setup.sh' to reinitialize a fresh database.${NC}"
     else
         echo -e "${BLUE}Aborted. Data preserved.${NC}"
@@ -278,6 +406,7 @@ fi
 if [[ "$SHOW_STATUS" == "true" ]]; then
     [[ -f .env ]] && source .env
     echo -e "${BLUE}=== System Status (Rust RAG & GraphRAG Stack) ===${NC}"
+    echo -e "  • Container Runtime          : ${CONTAINER_RUNTIME:-auto}"
     curl -sf "http://localhost:${SURREAL_PORT:-8000}/health" > /dev/null 2>&1 \
         && echo -e "  • SurrealDB (Port ${SURREAL_PORT:-8000})       : ${GREEN}ONLINE${NC}" \
         || echo -e "  • SurrealDB (Port ${SURREAL_PORT:-8000})       : ${RED}OFFLINE${NC}"
@@ -305,40 +434,101 @@ echo -e "${BLUE}================================================================
 echo -e "${BLUE}   100% Rust RAG & GraphRAG Pipeline Setup (SurrealDB + TEI + Axum)          ${NC}"
 echo -e "${BLUE}==============================================================================${NC}"
 
-# 1. Check prerequisites (Docker & Docker Compose)
-install_docker() {
-    local os_name
-    os_name="$(uname -s)"
+# ==============================================================================
+# 1. Container Runtime Selection & Preparation (Docker / Colima / Podman)
+# ==============================================================================
 
-    if [[ "$os_name" == "Darwin" ]]; then
+# Load previously saved CONTAINER_RUNTIME from .env if no CLI override was given
+if [[ -z "$RUNTIME_ARG" && -f .env ]]; then
+    SAVED_RUNTIME=$(grep -E '^CONTAINER_RUNTIME=' .env | tail -n 1 | cut -d'=' -f2- | tr -d '[:space:]' || true)
+    if [[ "$SAVED_RUNTIME" == "podman" || "$SAVED_RUNTIME" == "colima" || "$SAVED_RUNTIME" == "docker" ]]; then
+        CONTAINER_RUNTIME="$SAVED_RUNTIME"
+    fi
+elif [[ -n "$RUNTIME_ARG" ]]; then
+    CONTAINER_RUNTIME="$RUNTIME_ARG"
+fi
+
+select_container_runtime() {
+    if [[ -n "$CONTAINER_RUNTIME" ]]; then
+        return 0
+    fi
+
+    # On Linux, auto-detect available runtime without prompting
+    if [[ "$OS_TYPE" != "Darwin" ]]; then
+        if command -v docker &> /dev/null && docker info &> /dev/null 2>&1; then
+            CONTAINER_RUNTIME="docker"
+        elif command -v podman &> /dev/null && podman info &> /dev/null 2>&1; then
+            CONTAINER_RUNTIME="podman"
+        elif command -v docker &> /dev/null; then
+            CONTAINER_RUNTIME="docker"
+        elif command -v podman &> /dev/null; then
+            CONTAINER_RUNTIME="podman"
+        else
+            CONTAINER_RUNTIME="docker"
+        fi
+        return 0
+    fi
+
+    # On macOS: if non-interactive terminal, auto-detect or default to colima
+    if [[ ! -t 0 ]]; then
+        if command -v podman &> /dev/null && podman info &> /dev/null 2>&1; then
+            CONTAINER_RUNTIME="podman"
+        elif command -v docker &> /dev/null && docker info &> /dev/null 2>&1; then
+            if command -v colima &> /dev/null && colima status &> /dev/null 2>&1; then
+                CONTAINER_RUNTIME="colima"
+            else
+                CONTAINER_RUNTIME="docker"
+            fi
+        elif command -v podman &> /dev/null && ! command -v colima &> /dev/null; then
+            CONTAINER_RUNTIME="podman"
+        else
+            CONTAINER_RUNTIME="colima"
+        fi
+        return 0
+    fi
+
+    echo ""
+    echo -e "${BLUE}Select your container runtime (saved in .env; override anytime via --podman / --colima / --docker):${NC}"
+    echo -e "  1) Colima + Docker CLI  (Recommended: lightweight open-source VM on macOS)"
+    echo -e "  2) Podman               (Daemonless OCI runtime via Podman Machine)"
+    echo -e "  3) Docker Desktop       (Docker Desktop for Mac GUI)"
+    while true; do
+        read -r -p "Selection [1/2/3] (Default: 1): " runtime_choice
+        case "${runtime_choice:-1}" in
+            1) CONTAINER_RUNTIME="colima"; break ;;
+            2) CONTAINER_RUNTIME="podman"; break ;;
+            3) CONTAINER_RUNTIME="docker"; break ;;
+            *) log_error "Invalid choice. Please enter 1, 2, or 3." ;;
+        esac
+    done
+}
+
+install_docker_runtime() {
+    if [[ "$OS_TYPE" == "Darwin" ]]; then
         if ! command -v brew &> /dev/null; then
-            echo -e "${RED}[ERROR] Homebrew ('brew') is required for automatic installation on macOS.${NC}"
-            echo -e "Install Homebrew first with: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            log_error "Homebrew ('brew') is required for automatic installation on macOS."
+            echo -e "Install Homebrew first with: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/stable/install.sh)\""
             exit 1
         fi
 
-        echo -e "\n${BLUE}Which Docker variant would you like to install on your Mac?${NC}"
-        echo -e "  1) Colima + Docker CLI (Recommended: 100% Open Source, MIT/Apache 2.0)"
-        echo -e "  2) Docker Desktop for Mac (GUI App)"
-        read -r -p "Selection [1/2] (Default: 1): " mac_docker_choice
-        mac_docker_choice="${mac_docker_choice:-1}"
-
-        if [[ "$mac_docker_choice" == "2" ]]; then
-            echo -e "${BLUE}Installing Docker Desktop via Homebrew Cask...${NC}"
+        if [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
+            log_info "Installing Docker Desktop via Homebrew Cask..."
             brew install --cask docker
-            echo -e "${YELLOW}Starting Docker Desktop... Please wait until the engine is ready.${NC}"
+            log_warn "Starting Docker Desktop... Please wait until the engine is ready."
             open -a Docker
         else
-            echo -e "${BLUE}Installing Docker CLI, Docker Compose, Buildx & Colima...${NC}"
+            log_info "Installing Docker CLI, Docker Compose, Buildx & Colima via Homebrew..."
             brew install docker docker-compose docker-buildx colima
             mkdir -p ~/.docker/cli-plugins
             ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" ~/.docker/cli-plugins/docker-compose
             ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
-            echo -e "${BLUE}Starting Colima VM (4 CPUs, 8 GB RAM)...${NC}"
-            colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta || colima start --cpu 4 --memory 8
+            log_info "Starting Colima VM (4 CPUs, 8 GB RAM)..."
+            colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta --mount-type virtiofs \
+                || colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta \
+                || colima start --cpu 4 --memory 8
         fi
     else
-        echo -e "${BLUE}Installing Docker Engine & Docker Compose Plugin for Linux...${NC}"
+        log_info "Installing Docker Engine & Docker Compose Plugin for Linux..."
         curl -fsSL https://get.docker.com | sh
         if [[ "$EUID" -ne 0 ]]; then
             sudo usermod -aG docker "$USER" || true
@@ -346,59 +536,214 @@ install_docker() {
         fi
     fi
 
-    echo -e "${BLUE}Waiting for Docker daemon to become responsive...${NC}"
+    log_info "Waiting for Docker daemon to become responsive..."
     for _ in {1..30}; do
-        if docker info &> /dev/null; then
-            echo -e "${GREEN}[OK] Docker successfully installed and started!${NC}"
+        if docker info &> /dev/null 2>&1; then
+            log_success "Docker successfully installed and started!"
             return 0
         fi
         sleep 2
     done
 
-    echo -e "${RED}[ERROR] Docker daemon not responding. Please check status manually.${NC}"
+    log_error "Docker daemon not responding. Please check status manually."
     exit 1
 }
 
-if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
-    echo -e "${YELLOW}[NOTICE] Docker or 'docker compose' is not yet installed on this system.${NC}"
-    echo -e "What would you like to do?"
-    echo -e "  1) Install Docker"
-    echo -e "  2) Abort"
-    read -r -p "Please select [1/2]: " docker_choice
-
-    case "$docker_choice" in
-        1)
-            install_docker
-            ;;
-        *)
-            echo -e "${RED}Setup aborted.${NC}"
+install_podman_runtime() {
+    if [[ "$OS_TYPE" == "Darwin" ]]; then
+        if ! command -v brew &> /dev/null; then
+            log_error "Homebrew ('brew') is required for automatic Podman installation on macOS."
+            echo -e "Install Homebrew first with: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/stable/install.sh)\""
             exit 1
-            ;;
-    esac
-fi
-
-if ! docker info &> /dev/null; then
-    echo -e "${YELLOW}[NOTICE] Docker is installed, but the daemon is not currently running.${NC}"
-    if [[ "$(uname -s)" == "Darwin" ]] && command -v colima &> /dev/null; then
-        echo -e "${BLUE}Starting Colima...${NC}"
-        colima start --cpu 4 --memory 8
-    elif [[ "$(uname -s)" == "Darwin" ]] && [[ -d "/Applications/Docker.app" ]]; then
-        echo -e "${BLUE}Starting Docker Desktop...${NC}"
-        open -a Docker
-        for _ in {1..30}; do
-            docker info &> /dev/null && break
-            sleep 2
-        done
+        fi
+        log_info "Installing Podman & podman-compose via Homebrew..."
+        brew install podman podman-compose
     else
-        echo -e "${RED}[ERROR] Please start the Docker daemon and run ./setup.sh again.${NC}"
+        log_info "Installing Podman & podman-compose for Linux..."
+        if [[ -f /etc/os-release ]]; then
+            # shellcheck disable=SC1091
+            source /etc/os-release
+            case "${ID:-}" in
+                ubuntu|debian|linuxmint|pop)
+                    sudo apt-get update && sudo apt-get install -y podman podman-compose
+                    ;;
+                fedora|rhel|centos|rocky|almalinux)
+                    sudo dnf install -y podman podman-compose
+                    ;;
+                arch|manjaro)
+                    sudo pacman -Sy --noconfirm podman podman-compose
+                    ;;
+                *)
+                    log_error "Unsupported Linux distribution '${ID:-unknown}' for automatic Podman install. Please install 'podman' and 'podman-compose' manually."
+                    exit 1
+                    ;;
+            esac
+        else
+            log_error "Could not detect Linux distribution. Please install 'podman' and 'podman-compose' manually."
+            exit 1
+        fi
+    fi
+}
+
+ensure_podman_ready() {
+    if ! command -v podman &> /dev/null; then
+        log_warn "Podman is not yet installed on this system."
+        echo -e "What would you like to do?"
+        echo -e "  1) Install Podman & podman-compose"
+        echo -e "  2) Abort"
+        read -r -p "Please select [1/2]: " podman_choice
+        case "$podman_choice" in
+            1) install_podman_runtime ;;
+            *) echo -e "${RED}Setup aborted.${NC}"; exit 1 ;;
+        esac
+    fi
+
+    # On macOS, ensure Podman Machine exists and is running
+    if [[ "$OS_TYPE" == "Darwin" ]]; then
+        if ! podman info &> /dev/null 2>&1; then
+            local existing_machines
+            existing_machines=$(podman machine list --format '{{.Name}}' 2>/dev/null || true)
+            if [[ -z "$existing_machines" ]]; then
+                log_info "Initializing Podman Machine (4 CPUs, 8 GB RAM, 50 GB disk)..."
+                podman machine init --cpus 4 --memory 8192 --disk-size 50 \
+                    || podman machine init
+            fi
+
+            log_info "Starting Podman Machine..."
+            podman machine start || true
+
+            log_info "Waiting for Podman Machine to become responsive..."
+            local ready=false
+            for _ in {1..30}; do
+                if podman info &> /dev/null 2>&1; then
+                    ready=true
+                    break
+                fi
+                sleep 2
+            done
+
+            if [[ "$ready" != "true" ]]; then
+                log_error "Podman Machine did not become responsive. Check 'podman machine list' and 'podman info'."
+                exit 1
+            fi
+        fi
+    else
+        if ! podman info &> /dev/null 2>&1; then
+            log_error "Podman is installed, but 'podman info' failed. Please verify your Podman installation."
+            exit 1
+        fi
+    fi
+
+    # Ensure either 'podman compose' or 'podman-compose' is available
+    if ! detect_podman_compose_cmd; then
+        log_warn "Neither 'podman compose' nor 'podman-compose' is available."
+        if [[ "$OS_TYPE" == "Darwin" ]] && command -v brew &> /dev/null; then
+            log_info "Installing 'podman-compose' via Homebrew..."
+            brew install podman-compose
+            detect_podman_compose_cmd || {
+                log_error "Failed to configure 'podman-compose'."
+                exit 1
+            }
+        else
+            log_error "Please install 'podman-compose' (or configure a compose provider for 'podman compose') and re-run ./setup.sh."
+            exit 1
+        fi
+    fi
+
+    CONTAINER_CLI="podman"
+    HOST_ALIAS="host.containers.internal"
+
+    # Pre-flight check on macOS: warn if existing Podman Machine has low free disk space or RAM
+    if [[ "$OS_TYPE" == "Darwin" ]]; then
+        local vm_avail_kb vm_mem_mb
+        vm_avail_kb=$(podman machine ssh "df -Pk /sysroot 2>/dev/null | awk 'NR==2 {print \$4}'" 2>/dev/null | tr -d '[:space:]' || true)
+        vm_mem_mb=$(podman machine inspect --format '{{.Resources.Memory}}' 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)
+        if [[ "$vm_avail_kb" =~ ^[0-9]+$ && "$vm_avail_kb" -lt 3145728 ]]; then
+            local vm_avail_mb=$(( vm_avail_kb / 1024 ))
+            log_warn "Podman Machine root filesystem has only ${vm_avail_mb} MiB free (< 3 GiB). Rust builds may fail with 'No space left on device'."
+            log_warn "Tip: Run 'podman system prune -af' or recreate the VM ('podman machine rm -f && podman machine init --cpus 4 --memory 8192 --disk-size 50')."
+        fi
+        if [[ "$vm_mem_mb" =~ ^[0-9]+$ && "$vm_mem_mb" -lt 4096 ]]; then
+            log_warn "Podman Machine has only ${vm_mem_mb} MiB RAM (< 4 GiB). Consider 'podman machine stop && podman machine set --memory 8192 && podman machine start'."
+        fi
+    fi
+
+    log_success "Podman & '${COMPOSE_CMD[*]}' are ready (Host alias: ${HOST_ALIAS})."
+}
+
+ensure_docker_ready() {
+    if ! command -v docker &> /dev/null || ! detect_docker_compose_cmd; then
+        log_warn "Docker or 'docker compose' is not yet installed on this system."
+        echo -e "What would you like to do?"
+        echo -e "  1) Install Docker (${CONTAINER_RUNTIME})"
+        echo -e "  2) Abort"
+        read -r -p "Please select [1/2]: " docker_choice
+        case "$docker_choice" in
+            1) install_docker_runtime ;;
+            *) echo -e "${RED}Setup aborted.${NC}"; exit 1 ;;
+        esac
+    fi
+
+    if ! docker info &> /dev/null 2>&1; then
+        log_warn "Docker is installed, but the daemon is not currently running."
+        if [[ "$OS_TYPE" == "Darwin" && "$CONTAINER_RUNTIME" == "colima" ]]; then
+            if ! command -v colima &> /dev/null; then
+                if command -v brew &> /dev/null; then
+                    log_info "Installing Colima via Homebrew..."
+                    brew install colima
+                else
+                    log_error "Colima is not installed and Homebrew is unavailable."
+                    exit 1
+                fi
+            fi
+            log_info "Starting Colima VM (4 CPUs, 8 GB RAM)..."
+            colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta --mount-type virtiofs \
+                || colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta \
+                || colima start --cpu 4 --memory 8
+        elif [[ "$OS_TYPE" == "Darwin" && -d "/Applications/Docker.app" ]]; then
+            log_info "Starting Docker Desktop..."
+            open -a Docker
+            for _ in {1..30}; do
+                docker info &> /dev/null 2>&1 && break
+                sleep 2
+            done
+        elif [[ "$OS_TYPE" == "Darwin" ]] && command -v colima &> /dev/null; then
+            log_info "Starting Colima VM (4 CPUs, 8 GB RAM)..."
+            colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta --mount-type virtiofs \
+                || colima start --cpu 4 --memory 8 --vm-type vz --vz-rosetta \
+                || colima start --cpu 4 --memory 8
+        else
+            log_error "Please start the Docker daemon (or Colima) and run ./setup.sh again."
+            exit 1
+        fi
+    fi
+
+    if ! docker info &> /dev/null 2>&1; then
+        log_error "Docker daemon is still not reachable after startup attempt."
         exit 1
     fi
+
+    detect_docker_compose_cmd || {
+        log_error "Neither 'docker compose' nor 'docker-compose' is available."
+        exit 1
+    }
+
+    CONTAINER_CLI="docker"
+    HOST_ALIAS="host.docker.internal"
+    log_success "Docker (${CONTAINER_RUNTIME}) & '${COMPOSE_CMD[*]}' are ready (Host alias: ${HOST_ALIAS})."
+}
+
+select_container_runtime
+if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
+    ensure_podman_ready
+else
+    ensure_docker_ready
 fi
 
-echo -e "${GREEN}[OK] Docker & Docker Compose are ready.${NC}"
-
+# ==============================================================================
 # 2. Check hardware resources (OS, architecture, RAM, CPU cores, Metal / NVIDIA GPU)
-OS_TYPE="$(uname -s)"
+# ==============================================================================
+
 ARCH_TYPE="$(uname -m)"
 IS_APPLE_SILICON=false
 APPLE_CHIP_NAME=""
@@ -456,7 +801,10 @@ if [[ "$TOTAL_RAM_GB" -lt 8 ]]; then
     echo -e "${YELLOW}[WARNING] Minimum RAM requirement for the complete stack is 8 GB (currently: ${TOTAL_RAM_GB} GB).${NC}"
 fi
 
+# ==============================================================================
 # 3. Create or update .env file
+# ==============================================================================
+
 if [[ ! -f .env ]]; then
     cp .env.example .env
     echo -e "${GREEN}[OK] Created .env from .env.example.${NC}"
@@ -486,6 +834,7 @@ update_env_var() {
     fi
 }
 
+update_env_var "CONTAINER_RUNTIME" "$CONTAINER_RUNTIME"
 update_env_var "COMPUTE_MODE" "$MODE"
 update_env_var "MODEL_PRESET" "$PRESET"
 update_env_var "EMBEDDING_MODEL" "$EMBED_MODEL"
@@ -532,6 +881,17 @@ set -a
 source .env
 set +a
 
+# Align local host alias in LLM_BASE_URL when switching between Docker/Colima and Podman
+if [[ -z "$LLM_URL_ARG" && -n "${LLM_BASE_URL:-}" ]]; then
+    if [[ "$CONTAINER_RUNTIME" == "podman" && "$LLM_BASE_URL" == *"://host.docker.internal"* ]]; then
+        LLM_BASE_URL="${LLM_BASE_URL//:\/\/host.docker.internal/:\/\/host.containers.internal}"
+        update_env_var "LLM_BASE_URL" "$LLM_BASE_URL"
+    elif [[ "$CONTAINER_RUNTIME" != "podman" && "$LLM_BASE_URL" == *"://host.containers.internal"* ]]; then
+        LLM_BASE_URL="${LLM_BASE_URL//:\/\/host.containers.internal/:\/\/host.docker.internal}"
+        update_env_var "LLM_BASE_URL" "$LLM_BASE_URL"
+    fi
+fi
+
 # Guard against duplicate ports
 if [[ "${TEI_EMBED_PORT}" == "${TEI_RERANK_PORT}" || "${TEI_EMBED_PORT}" == "${TEI_RERANK_FAST_PORT}" || "${TEI_RERANK_PORT}" == "${TEI_RERANK_FAST_PORT}" ]]; then
     update_env_var "TEI_EMBED_PORT" "${EMBED_PORT_ARG:-8081}"
@@ -556,7 +916,7 @@ ensure_free_port() {
         if echo "$proc_info" | grep -Eqi "$own_pattern|text-embe"; then
             break
         fi
-        if docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -E "^rag-" | grep -q ":${p}->"; then
+        if "$CONTAINER_CLI" ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -E "^rag-" | grep -q ":${p}->"; then
             break
         fi
         echo -e "${YELLOW}[NOTICE] Port ${p} (${env_key}) is occupied by another process -> selecting free port...${NC}" >&2
@@ -586,9 +946,9 @@ source .env
 set +a
 
 if [[ "$MODE" == "metal" ]]; then
-    update_env_var "TEI_EMBED_URL" "http://host.docker.internal:${TEI_EMBED_PORT:-8081}"
-    update_env_var "TEI_RERANK_URL" "http://host.docker.internal:${TEI_RERANK_PORT:-8082}"
-    update_env_var "TEI_RERANK_FAST_URL" "http://host.docker.internal:${TEI_RERANK_FAST_PORT:-8083}"
+    update_env_var "TEI_EMBED_URL" "http://${HOST_ALIAS}:${TEI_EMBED_PORT:-8081}"
+    update_env_var "TEI_RERANK_URL" "http://${HOST_ALIAS}:${TEI_RERANK_PORT:-8082}"
+    update_env_var "TEI_RERANK_FAST_URL" "http://${HOST_ALIAS}:${TEI_RERANK_FAST_PORT:-8083}"
 else
     update_env_var "TEI_EMBED_URL" "http://tei-embed:80"
     update_env_var "TEI_RERANK_URL" "http://tei-rerank:80"
@@ -607,6 +967,7 @@ source .env
 set +a
 
 echo -e "${BLUE}[CONFIGURATION]${NC}"
+echo -e "  • Runtime         : ${CONTAINER_RUNTIME} (${COMPOSE_CMD[*]})"
 echo -e "  • Compute Profile : ${MODE}"
 echo -e "  • Model Preset    : ${PRESET} (${EMBEDDING_MODEL}, ${EMBEDDING_DIM}d + ${RERANKER_MODEL})"
 echo -e "  • TEI Endpoints   : Embed=${TEI_EMBED_URL} | Rerank=${TEI_RERANK_URL}"
@@ -614,7 +975,10 @@ echo -e "  • LLM Provider    : ${LLM_PROVIDER} (${LLM_MODEL} @ ${LLM_BASE_URL}
 echo -e "  • SurrealDB Port  : ${SURREAL_PORT}"
 echo -e "  • RAG API Port    : ${ORCHESTRATOR_PORT}"
 
-# 4A. If --mode metal (Apple Silicon M1–M6): Launch native Metal TEI processes
+# ==============================================================================
+# 4. Launch Services (Metal Native TEI + Containers, or Full Container Stack)
+# ==============================================================================
+
 if [[ "$MODE" == "metal" ]]; then
     echo -e "\n${BLUE}[1/4] Preparing Apple Silicon Metal GPU inference (text-embeddings-router)...${NC}"
     if ! command -v text-embeddings-router &> /dev/null; then
@@ -658,15 +1022,18 @@ if [[ "$MODE" == "metal" ]]; then
         --auto-truncate > logs/tei_rerank_fast_metal.log 2>&1 &
     echo $! > .pids/tei_rerank_fast.pid
 
-    echo -e "\n${BLUE}[2/4] Building and starting SurrealDB & Rust RAG Orchestrator in Docker (native arm64)...${NC}"
-    docker compose up -d --build surrealdb rag-orchestrator
+    echo -e "\n${BLUE}[2/4] Building and starting SurrealDB & Rust RAG Orchestrator via ${CONTAINER_RUNTIME} (native arm64)...${NC}"
+    "${COMPOSE_CMD[@]}" up -d --build surrealdb rag-orchestrator
 else
-    # 4B. Docker Compose stack for 'cpu' or 'gpu' (NVIDIA)
-    echo -e "\n${BLUE}[1/3] Building and starting Docker containers (Profile: ${MODE})...${NC}"
-    docker compose --profile "$MODE" up -d --build
+    # 4B. Full Container Compose stack for 'cpu' or 'gpu' (NVIDIA)
+    echo -e "\n${BLUE}[1/3] Building and starting containers via ${CONTAINER_RUNTIME} (Profile: ${MODE})...${NC}"
+    "${COMPOSE_CMD[@]}" --profile "$MODE" up -d --build
 fi
 
+# ==============================================================================
 # 5. Wait for SurrealDB healthcheck and load schema
+# ==============================================================================
+
 echo -e "\n${BLUE}Waiting for SurrealDB at http://localhost:${SURREAL_PORT} ...${NC}"
 for i in {1..30}; do
     if curl -sf "http://localhost:${SURREAL_PORT}/health" > /dev/null 2>&1; then
@@ -693,7 +1060,10 @@ else
     exit 1
 fi
 
+# ==============================================================================
 # 6. Wait for TEI Embedding & Reranker readiness
+# ==============================================================================
+
 echo -e "\n${BLUE}Waiting for TEI Embedding server (${EMBEDDING_MODEL}) at http://localhost:${TEI_EMBED_PORT}/health ...${NC}"
 for i in {1..60}; do
     if curl -sf "http://localhost:${TEI_EMBED_PORT}/health" > /dev/null 2>&1; then
@@ -721,12 +1091,16 @@ for i in {1..60}; do
     sleep 2
 done
 
+# ==============================================================================
 # 7. Check and warm up local Ollama if configured
+# ==============================================================================
+
 if [[ "$LLM_PROVIDER" == "openai_compatible" ]] && [[ "$LLM_BASE_URL" == *"11434"* ]]; then
     echo -e "\n${BLUE}Checking local Ollama at http://localhost:11434 ...${NC}"
     if ! curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
         if command -v ollama &> /dev/null; then
             echo -e "${YELLOW}Ollama not running -> starting 'ollama serve' in background...${NC}"
+            mkdir -p .pids logs
             OLLAMA_HOST=0.0.0.0 OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > logs/ollama.log 2>&1 &
             echo $! > .pids/ollama.pid
             for _ in {1..20}; do
@@ -760,7 +1134,7 @@ if [[ "$LLM_PROVIDER" == "openai_compatible" ]] && [[ "$LLM_BASE_URL" == *"11434
 fi
 
 echo -e "\n${GREEN}==============================================================================${NC}"
-echo -e "${GREEN}   RAG Stack successfully started! (Mode: ${MODE})                          ${NC}"
+echo -e "${GREEN}   RAG Stack successfully started! (Runtime: ${CONTAINER_RUNTIME} | Mode: ${MODE}) ${NC}"
 echo -e "${GREEN}==============================================================================${NC}"
 if [[ "$MODE" == "metal" ]]; then
     echo -e "Apple Silicon Metal Logs:"

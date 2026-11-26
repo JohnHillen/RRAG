@@ -933,12 +933,18 @@ Text:
     }
 }
 
-/// If running inside a Docker container (`/.dockerenv`) and the user specifies
-/// `localhost` or `127.0.0.1`, automatically map to `host.docker.internal`.
+/// If running inside a container (Podman via `/run/.containerenv` or Docker/Colima via `/.dockerenv`),
+/// normalize host loopback addresses (`localhost` / `127.0.0.1`) and cross-runtime host aliases to
+/// the active container engine's host gateway hostname (`host.containers.internal` or `host.docker.internal`).
 fn normalize_docker_localhost(url: &str) -> String {
-    if std::path::Path::new("/.dockerenv").exists() {
+    if std::path::Path::new("/run/.containerenv").exists() {
+        url.replace("://localhost", "://host.containers.internal")
+            .replace("://127.0.0.1", "://host.containers.internal")
+            .replace("://host.docker.internal", "://host.containers.internal")
+    } else if std::path::Path::new("/.dockerenv").exists() {
         url.replace("://localhost", "://host.docker.internal")
             .replace("://127.0.0.1", "://host.docker.internal")
+            .replace("://host.containers.internal", "://host.docker.internal")
     } else {
         url.to_string()
     }
