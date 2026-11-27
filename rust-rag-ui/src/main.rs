@@ -1167,6 +1167,45 @@ fn doc_format_labels(
         } else {
             ("📄", "📄 PDF anzeigen", "PDF-Dokument im Viewer anzeigen", "✕ PDF schließen")
         }
+    } else if lower.ends_with(".docx")
+        || lower.ends_with(".doc")
+        || lower.ends_with(".docm")
+        || lower.ends_with(".odt")
+        || lower.ends_with(".fodt")
+        || lower.ends_with(".rtf")
+        || lower.ends_with(".tex")
+        || lower.ends_with(".latex")
+        || lower.ends_with(".epub")
+    {
+        if is_en {
+            ("📘", "📘 View Word/ODT", "Open Word/ODT document in viewer", "✕ Close Document")
+        } else {
+            ("📘", "📘 Word/ODT anzeigen", "Word-/ODT-Dokument im Viewer anzeigen", "✕ Dokument schließen")
+        }
+    } else if lower.ends_with(".xlsx")
+        || lower.ends_with(".xlsm")
+        || lower.ends_with(".xlsb")
+        || lower.ends_with(".xls")
+        || lower.ends_with(".ods")
+        || lower.ends_with(".csv")
+        || lower.ends_with(".tsv")
+    {
+        if is_en {
+            ("📊", "📊 View Spreadsheet", "Open spreadsheet in viewer", "✕ Close Table")
+        } else {
+            ("📊", "📊 Tabelle anzeigen", "Tabelle (Excel/ODS/CSV) im Viewer anzeigen", "✕ Tabelle schließen")
+        }
+    } else if lower.ends_with(".pptx")
+        || lower.ends_with(".ppsx")
+        || lower.ends_with(".ppt")
+        || lower.ends_with(".pps")
+        || lower.ends_with(".odp")
+    {
+        if is_en {
+            ("📙", "📙 View Slides", "Open presentation in viewer", "✕ Close Slides")
+        } else {
+            ("📙", "📙 Präsentation anzeigen", "Präsentation (PPTX/ODP) im Viewer anzeigen", "✕ Präsentation schließen")
+        }
     } else if lower.ends_with(".xml") {
         if is_en {
             ("📜", "📜 View XML", "Open XML document in viewer", "✕ Close XML")
@@ -1179,6 +1218,12 @@ fn doc_format_labels(
         } else {
             ("📝", "📝 Markdown anzeigen", "Markdown-Dokument im Viewer anzeigen", "✕ Dokument schließen")
         }
+    } else if lower.ends_with(".json") || lower.ends_with(".jsonl") {
+        if is_en {
+            ("🧩", "🧩 View JSON", "Open JSON document in viewer", "✕ Close JSON")
+        } else {
+            ("🧩", "🧩 JSON anzeigen", "JSON-Dokument im Viewer anzeigen", "✕ JSON schließen")
+        }
     } else if lower.ends_with(".html") || lower.ends_with(".htm") {
         if is_en {
             ("🌐", "🌐 View HTML", "Open HTML document in viewer", "✕ Close Document")
@@ -1190,12 +1235,6 @@ fn doc_format_labels(
             ("📃", "📃 View Text", "Open text document in viewer", "✕ Close Document")
         } else {
             ("📃", "📃 Text anzeigen", "Textdokument im Viewer anzeigen", "✕ Dokument schließen")
-        }
-    } else if lower.ends_with(".csv") || lower.ends_with(".json") {
-        if is_en {
-            ("📊", "📊 View File", "Open document in viewer", "✕ Close Document")
-        } else {
-            ("📊", "📊 Datei anzeigen", "Dokument im Viewer anzeigen", "✕ Dokument schließen")
         }
     } else if is_en {
         ("📄", "📄 View Document", "Open document in viewer", "✕ Close Document")
@@ -3901,7 +3940,7 @@ fn App() -> impl IntoView {
                     <input
                         type="file"
                         multiple=true
-                        accept=".pdf,.xml,.md,.txt,.html,.htm,.csv,.json"
+                        accept=".pdf,.docx,.doc,.docm,.odt,.fodt,.rtf,.xlsx,.xlsm,.xlsb,.xls,.ods,.csv,.tsv,.pptx,.ppt,.odp,.epub,.tex,.latex,.md,.markdown,.xml,.json,.jsonl,.txt,.html,.htm,.xhtml,.png,.jpg,.jpeg,.webp"
                         style="display: none;"
                         node_ref=chat_attach_input_ref
                         on:change=on_chat_attachment_selected
@@ -4173,9 +4212,16 @@ fn App() -> impl IntoView {
                                                         prop:value=move || ingest_pipeline.get()
                                                         on:change=move |ev| set_ingest_pipeline.set(event_target_value(&ev))
                                                     >
-                                                        <option value="auto">{move || if is_en() { "🔄 Auto-detect (Legal XML vs. Generic)" } else { "🔄 Automatisch erkennen (Gesetzes-XML vs. Generisch)" }}</option>
-                                                        <option value="generic">{move || if is_en() { "📄 Generic Pipeline (PDF, Markdown, Contracts, Free Text)" } else { "📄 Generische Pipeline (PDF, Markdown, Verträge, Freitext)" }}</option>
+                                                        <option value="auto">{move || if is_en() { "🔄 Auto-detect (ArtCraft Engine: PDF, Word .docx/.doc, Excel .xlsx/.xls, PPTX/.ppt, ODF, MD, XML, JSON, Legal)" } else { "🔄 Automatisch erkennen (ArtCraft-Engine: PDF, Word .docx/.doc, Excel .xlsx/.xls, PPTX/.ppt, ODF, MD, XML, JSON, Gesetze)" }}</option>
+                                                        <option value="pdf">{move || if is_en() { "📄 PDF Layout & Scan OCR Pipeline (ArtCraft pdfcraft-export + Tesseract deu/eng)" } else { "📄 PDF-Layout & Scan-OCR Pipeline (ArtCraft pdfcraft-export + Tesseract deu/eng)" }}</option>
+                                                        <option value="word">{move || if is_en() { "📘 Word, OpenDocument, RTF, LaTeX & EPUB Pipeline (.docx, .doc, .odt, .rtf, .tex, .epub)" } else { "📘 Word, OpenDocument, RTF, LaTeX & EPUB Pipeline (.docx, .doc, .odt, .rtf, .tex, .epub)" }}</option>
+                                                        <option value="spreadsheet">{move || if is_en() { "📊 Excel, Calc & CSV Table Pipeline (.xlsx, .xlsb, .xls, .ods, .csv — Header-Repeating)" } else { "📊 Excel, Calc & CSV Tabellen-Pipeline (.xlsx, .xlsb, .xls, .ods, .csv — Spaltenkopf-Erhalt)" }}</option>
+                                                        <option value="presentation">{move || if is_en() { "📙 Presentation Pipeline (.pptx, .ppt, .odp — Slide-by-Slide)" } else { "📙 Präsentations-Pipeline (.pptx, .ppt, .odp — Folien-Chunking)" }}</option>
+                                                        <option value="markdown">{move || if is_en() { "📝 Markdown & Tech-Docs Pipeline (.md — Frontmatter & Link Graph)" } else { "📝 Markdown & Doku-Pipeline (.md — Frontmatter & Link-Graph)" }}</option>
+                                                        <option value="xml">{move || if is_en() { "📜 Structured XML Pipeline (.xml — Tree & Attribute Parser)" } else { "📜 Strukturierte XML-Pipeline (.xml — Baum- & Attribut-Parser)" }}</option>
+                                                        <option value="json">{move || if is_en() { "🧩 JSON & JSONL Pipeline (.json, .jsonl — Record & Table Chunker)" } else { "🧩 JSON & JSONL Pipeline (.json, .jsonl — Objekt- & Tabellen-Chunker)" }}</option>
                                                         <option value="legal">{move || if is_en() { "⚖️ Legal & Statutes Pipeline (gii-norm XML, EUR-Lex Formex, §§)" } else { "⚖️ Gesetze & Verordnungen Pipeline (gii-norm XML, EUR-Lex Formex, §§)" }}</option>
+                                                        <option value="generic">{move || if is_en() { "📃 Generic Text & HTML Pipeline (HTML, TXT, Free Text)" } else { "📃 Generische HTML- & Freitext-Pipeline (HTML, TXT, Freitext)" }}</option>
                                                     </select>
                                                 </div>
                                                 <div>
@@ -4237,7 +4283,7 @@ fn App() -> impl IntoView {
                                             type="file"
                                             id="multi-file-upload"
                                             multiple=true
-                                            accept=".pdf,.xml,.md,.txt,.html,.htm,.json,.csv"
+                                            accept=".pdf,.docx,.doc,.docm,.odt,.fodt,.rtf,.xlsx,.xlsm,.xlsb,.xls,.ods,.csv,.tsv,.pptx,.ppt,.odp,.epub,.tex,.latex,.md,.markdown,.xml,.json,.jsonl,.txt,.html,.htm,.xhtml,.png,.jpg,.jpeg,.webp"
                                             style="display:none;"
                                             node_ref=file_input_ref
                                             on:change=on_files_selected

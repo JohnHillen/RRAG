@@ -27,5 +27,25 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 dotenvy = "0.15"
 pdf-extract = "0.7"
 html2text = "0.12"
+flate2 = "1.0"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json"] }
+
+# ArtCraft (storytold/craft-libs) pure-Rust document & spreadsheet format engines (MIT / Apache-2.0)
+craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-doc-binary = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-odf = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9", features = ["text"] }
+craft-rtf = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9", features = ["doc"] }
+craft-html = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9", features = ["flow"] }
+craft-latex = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-markdown = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-sheet = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-xlsx = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-xls = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-ods = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-csv = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-pptx = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-ppt-binary = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "e9da0dfb37ab5e35c4c6f35949b36f09b8dcfcf9" }
+
 

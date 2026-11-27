@@ -16,7 +16,7 @@ Once the stack is running, all settings are controlled directly inside the web i
 - **🤖 Language Model (LLM)**:
   - Switch live at runtime between **Local Ollama / vLLM / llama.cpp / LM Studio**, **RunPod Cloud GPUs**, **OpenAI**, **Google Gemini**, and **Anthropic Claude** with 1-click live model discovery (`POST /v1/llm/models`).
 - **🚀 Built-in RunPod GPU Cloud Manager**:
-  - **Live RunPod GPU Catalog (`GET /v1/runpod/gpus`)**: Queries RunPod's official GraphQL API in real time to display a full dropdown of all ~40 GPU types (`NVIDIA A40 48 GB`, `RTX A6000 48 GB`, `RTX 4090 24 GB`, `RTX 3090 24 GB`, `L40S 48 GB`, `A100 80 GB`, `H100`, etc.) with live **Community Cloud & Secure Cloud hourly prices** and real-time **stock availability (`🟢` / `⚪`)**.
+  - **Live RunPod GPU Catalog (`GET /v1/runpod/gpus`)**: Queries RunPod's official REST API v2 catalog (`/v2/catalog/gpus?include=AVAILABILITY&product=POD`, with automatic GraphQL fallback) in real time to display a full dropdown of all ~45 GPU types (`NVIDIA A40 48 GB`, `RTX A6000 48 GB`, `RTX 4090 24 GB`, `RTX 3090 24 GB`, `L40S 48 GB`, `A100 80 GB`, `H100`, etc.) with live **Community Cloud & Secure Cloud hourly prices** and real-time **stock availability (`🟢` / `⚪`)**.
   - **1-Click Single-Pod Deployment (`LLM + GPU Embedding`)**: Automatically provisions a RunPod GPU pod, installs and loads your chosen Ollama model (e.g. `qwen3:8b`, `qwen3:14b`, `qwen3:32b`, `deepseek-r1:14b`, `deepseek-r1:32b`) alongside an FP16 CUDA `BAAI/bge-m3` embedding server (`~1.2 GB VRAM`), opens an encrypted SSH port-forwarding tunnel (`:11435` & `:18081`), and switches the Chat UI to the cloud GPU.
   - **Encrypted Credential Vault**: Your RunPod API key and SSH key passphrase are encrypted at rest (`enc_v1:...` in `system_settings:runpod` + local browser fallback) so they survive page reloads and container restarts while remaining completely excluded from `.surql` database exports.
   - **1-Click Teardown**: Clicking **"Pod beenden & auf Mac zurückschalten"** terminates the cloud pod immediately (zero ongoing GPU billing) and switches the Chat UI back to your local model.
@@ -29,17 +29,29 @@ Once the stack is running, all settings are controlled directly inside the web i
 
 ---
 
-### 2. High-Speed Multi-File Ingestion & Pluggable Domain Pipelines
+### 2. High-Speed Multi-File Ingestion, ArtCraft Format Engines & Pluggable Domain Pipelines
 
 - **Batched Multi-File & Folder Upload (`➕`)**:
   - Select multiple files or entire directory trees (automatically preserving subfolder hierarchies as `[Category / Subfolder]` tags).
-  - Uploads are automatically grouped into **16-file batches** with **parallel multi-core PDF/OCR extraction** (`pdftotext` + automatic 200-DPI `pdftoppm` & `Tesseract OCR` for scanned PDFs and photographed receipts `.jpg`/`.png`) and **cross-file batched GPU embeddings** (`batch_size = 64`).
-- **Pluggable Ingestion Pipelines (`rust-rag-orchestrator/src/ingestion/pipelines/`)**:
-  - **`🔄 Auto-Detect` / `📄 Standard / Generic`**: Structure-aware document chunker (headings, tables, lists) with optional LLM Knowledge Graph extraction.
-  - **`⚖️ Legal & Statutory Pipeline` (`legal.rs`)**: Specialized parser for German (`gii-norm.dtd` XML from `gesetze-im-internet.de`) and EU (`Formex` XML) statutes. Chunks strictly along `§` and `Artikel` boundaries, injects statutory breadcrumb headers (`[<Statute> | <Section>]`), and extracts a **100% deterministic syntactic Knowledge Graph** (cross-referenced laws, public authorities, registers, and legal definitions) in **0 ms** without LLM hallucination.
-  - **`📊 Financial & Invoice Aggregation` (`invoice.rs`)**: Generic syntactic and mathematical VAT-triplet ($N + \text{Tax} = G$) extractor for invoices and receipts (`EUR`, `USD`, `CHF`). When you ask expense or summation questions in the chat (e.g. *"Sum up all my 2025 invoices"*), SurrealDB executes a live full-collection aggregation in **< 500 ms**, automatically deduplicates `Invoice` + `Receipt` pairs, and injects the exact per-category and line-by-line calculation table as `[Source 1]`.
+  - Uploads are automatically grouped into **16-file batches** with **parallel multi-core PDF/OCR extraction** (`pdftohtml -xml` + `pdfcraft-export` layout engine + automatic 200-DPI `pdftoppm` & `Tesseract OCR` for scanned PDFs and photographed receipts `.jpg`/`.png`) and **cross-file batched GPU embeddings** (`batch_size = 64`).
+- **100% Pure-Rust Format & Layout Engines (`ArtCraft` / `storytold/craft-libs` & `pdfcraft-export`)**:
+  - Preserves all structurally relevant document formatting (`#`..`######` heading hierarchies, `**bold**`, `*italic*`, `` `code` ``, nested lists, hyperlinks, and GitHub-Flavored Markdown pipe tables `| ... |`) as a rich Markdown AST for the chunker.
+  - **Hierarchical Heading Breadcrumb Stack (`chunker.rs`)**: Maintains a multi-level `[H1, H2, H3, H4, H5, H6]` heading stack so every chunk inherits its full section path (`[Dokument: <Title> | Abschnitt: <H1> > <H2> > <H3>]`).
+- **10 Pluggable Format & Domain Ingestion Pipelines (`rust-rag-orchestrator/src/ingestion/pipelines/`)**:
+  - **`🔄 Auto-Detect` (`auto`)**: Automatically detects the file extension and content header to route each file to its optimal format or domain pipeline.
+  - **`📄 PDF Layout & Scan OCR Pipeline` (`pdf` / `pdf_layout/`)**: Feeds Poppler `pdftohtml -xml` bounding boxes (`[x0, y0, x1, y1]`) and font metrics into ArtCraft's `pdfcraft-export` layout engine to reconstruct `# H1` / `## H2` headings by font-size ratio (`≥ 1.6×` / `≥ 1.25×` body size), multi-column reading order, `**bold**`/`*italic*` runs, and multi-column PDF tables (`| ... |`), with automatic fallback to parallel multi-core `Tesseract OCR (deu+eng)` for scanned PDFs and images (`.png`, `.jpg`, `.webp`, `.tiff`).
+  - **`📘 Word, OpenDocument, RTF, LaTeX & EPUB Pipeline` (`word` / `formats.rs`)**: Native pure-Rust extraction via `craft-docx` (`.docx`, `.docm`, `.dotx`, `.dotm`), `craft-doc-binary` (legacy **`.doc`** Word 95 & 97–2003), `craft-odf` (`.odt`, `.ott`, `.fodt`), `craft-rtf` (`.rtf`), `craft-latex` (`.tex`, `.latex`), and `craft-epub` (`.epub` EPUB 2 & 3 e-books) exported via `craft-markdown::export`.
+  - **`📊 Excel, Calc & CSV Table Pipeline` (`spreadsheet` / `formats.rs`)**: Native workbook extraction via `craft-xlsx` (`.xlsx`, `.xlsm`, **`.xlsb`** binary workbooks), `craft-xls` (legacy **`.xls`** Excel 97–2003 BIFF8), `craft-ods` (`.ods`), and `craft-csv` (`.csv`, `.tsv`). Includes a **Header-Repeating Table Chunker** (`chunk_spreadsheet_with_headers`) that repeats the worksheet name and Markdown column header row (`| Col A | Col B |`) in every chunk.
+  - **`📙 Presentation Pipeline` (`presentation` / `formats.rs`)**: Slide-by-slide extraction (`## Folie N: <Title>`) including grouped shapes, styled text runs, slide tables, and speaker notes via `craft-pptx` (`.pptx`, `.ppsx`, `.potx`), `craft-ppt-binary` (legacy **`.ppt`** PowerPoint 95 & 97–2003), and `.odp`.
+  - **`📝 Markdown & Tech-Docs Pipeline` (`markdown` / `formats.rs`)**: Parses YAML frontmatter (`---`) into structured metadata, preserves heading hierarchies, and syntactically extracts a section & link Knowledge Graph (`[Label](target)` and `[[WikiLinks]]`).
+  - **`📜 Structured XML Pipeline` (`xml` / `xml.rs`)**: Automatically promotes statutory XMLs (`gii-norm.dtd` / `Formex`) or converts arbitrary XML trees and attributes into structured Markdown (including Word Flat OPC and Word 2003 XML via `craft-docx::read_xml`).
+  - **`🧩 JSON & JSONL Pipeline` (`json` / `formats.rs`)**: Record-aligned chunking (`## Datensatz #N`) for JSON arrays, nested JSON objects, and newline-delimited `.jsonl` so records are never split mid-object.
+  - **`⚖️ Legal & Statutory Pipeline` (`legal` / `legal.rs`)**: Specialized parser for German (`gii-norm.dtd` XML) and EU (`Formex` XML) statutes. Chunks strictly along `§` and `Artikel` boundaries, injects statutory breadcrumb headers (`[<Statute> | <Section>]`), and extracts a **100% deterministic syntactic Knowledge Graph** in **0 ms**.
+  - **`📃 Generic & HTML Pipeline` (`generic`)**: Converts HTML/XHTML via `craft-html::doc::import` + `craft-markdown::export` (preserving `<h1>`–`<h6>`, `<table>`, lists, bold/italic, code blocks) and processes plain text with optional LLM Knowledge Graph extraction.
+- **📊 Financial & Invoice Aggregation (`invoice.rs`)**:
+  - Generic syntactic and mathematical VAT-triplet ($N + \text{Tax} = G$) extractor for invoices and receipts (`EUR`, `USD`, `CHF`). When you ask expense or summation questions in the chat (e.g. *"Sum up all my 2025 invoices"*), SurrealDB executes a live full-collection aggregation in **< 500 ms**, automatically deduplicates `Invoice` + `Receipt` pairs, and injects the exact per-category and line-by-line calculation table as `[Source 1]`.
 - **Integrated Full-Document Viewer (`GET /v1/documents/:doc_id/file`)**:
-  - Displays dynamic format buttons (`📄 PDF anzeigen`, `📜 XML anzeigen`, `📝 Markdown anzeigen`) and renders a native PDF viewer for PDFs or a searchable dark-mode full-document HTML viewer for `.xml`, `.md`, and `.txt` files.
+  - Displays dynamic format buttons (`📄 PDF anzeigen`, `📘 Word/ODT anzeigen`, `📊 Tabelle anzeigen`, `📙 Präsentation anzeigen`, `🧩 JSON anzeigen`, `📜 XML anzeigen`, `📝 Markdown anzeigen`) and renders a native PDF viewer for PDFs or a searchable dark-mode full-document HTML viewer for all structured document formats.
 
 ---
 
@@ -54,15 +66,21 @@ Once the stack is running, all settings are controlled directly inside the web i
 │   │   ├── documents.rs         # Document/chunk CRUD, Graph persistence & live financial aggregation
 │   │   ├── search.rs            # Hybrid Search (HNSW + BM25 + RRF) & 2-Hop Graph traversal
 │   │   └── external.rs          # Universal external SQL connector (PostgreSQL, MySQL, SQLite, SurrealDB)
-│   ├── ingestion/               # [Package: Batched Ingestion, PDF/Image OCR & Domain Pipelines]
+│   ├── ingestion/               # [Package: Batched Ingestion, ArtCraft Layout/Format Engines & OCR]
 │   │   ├── mod.rs               # TEI batch embedding (16 local / 64 RunPod GPU) & Cross-Encoder reranking
-│   │   ├── chunker.rs           # Structure-aware document chunker (headings, tables, norms)
-│   │   ├── pdf.rs               # Fast pdftotext, PDF/Image Tesseract OCR & full-document HTML/PDF viewer
-│   │   ├── xml.rs               # Statutory XML (gii-norm.dtd & EU Formex) to Markdown parser
+│   │   ├── chunker.rs           # Hierarchical H1>H2>H3 breadcrumb chunker (headings, tables, lists, norms)
+│   │   ├── pdf.rs               # Multi-format byte router, PDF/Image Tesseract OCR & full-document viewer
+│   │   ├── pdf_layout/          # ArtCraft (pdfcraft-export) PDF layout, heading, run & table engine
+│   │   │   ├── mod.rs           # Poppler pdftohtml -xml bounding-box & font parser -> Page/Block model
+│   │   │   ├── layout.rs        # Heading level (font-size ratio), reading order & column table detector
+│   │   │   ├── flow.rs          # Wrapped paragraph joiner & bullet-list pairing
+│   │   │   └── as_markdown.rs   # CommonMark & GFM pipe-table exporter via craft-markdown
+│   │   ├── xml.rs               # Statutory XML (gii-norm.dtd & EU Formex) & generic XML to Markdown parser
 │   │   ├── documents.rs         # Multi-file batch upload, deduplication & DB backup HTTP handlers
 │   │   ├── attachments.rs       # Ephemeral in-memory chat file extraction (/v1/extract)
-│   │   └── pipelines/           # Pluggable domain ingestion pipelines
-│   │       ├── mod.rs           # Pipeline router (Auto, Generic, LegalStatute)
+│   │   └── pipelines/           # Pluggable format & domain ingestion pipelines
+│   │       ├── mod.rs           # Pipeline router (Auto, PdfOcr, WordOdt, Spreadsheet, Presentation, MD, XML, JSON, Legal, Generic)
+│   │       ├── formats.rs       # ArtCraft (craft-libs) extractors (.docx/.doc, .odt, .rtf, .xlsx/.xlsb/.xls, .ods, .csv, .pptx/.ppt, .odp, .epub, .tex, .html, .md, .json) + header-repeating table chunker
 │   │       ├── legal.rs         # 0-ms syntactic legal citation & authority Knowledge Graph extractor
 │   │       └── invoice.rs       # Syntactic & VAT-triplet financial metadata extractor & aggregator
 │   ├── retrieval/               # [Package: Multi-Hop Retrieval & Dynamic Text-to-SQL]
@@ -75,7 +93,7 @@ Once the stack is running, all settings are controlled directly inside the web i
 │   │   └── stream.rs            # Real-time SSE token & reasoning (<think>) streaming
 │   └── api/                     # [Package: Chat API, RunPod Cloud Manager, MCP & Showcases]
 │       ├── chat.rs              # Streaming RAG chat & OpenAI-compatible /v1/chat/completions
-│       ├── runpod.rs            # RunPod GraphQL GPU catalog, REST v2 Pod deployment & SSH tunnel manager
+│       ├── runpod.rs            # RunPod v2 REST GPU catalog, REST v2 Pod deployment & SSH tunnel manager
 │       ├── mcp.rs               # Model Context Protocol (MCP) JSON-RPC 2.0 server (/mcp)
 │       └── showcases.rs         # Optional Showcase dispatcher (ActiveShowcase::None by default)
 │
@@ -131,9 +149,9 @@ By default, the stack starts with a clean knowledge base. If you want to explore
 | `/v1/chat/stream` | `POST` | Real-time SSE token & reasoning streaming with Hybrid RAG & GraphRAG sources |
 | `/v1/chat/completions` | `POST` | **OpenAI-compatible Chat API** (usable in Cursor, Open WebUI, LibreChat, custom agents) |
 | `/v1/retrieve` | `POST` | Standalone Multi-Stage Retrieval (HNSW + BM25 + 2-Hop Graph + Reranker + Aggregations) |
-| `/v1/ingest/file` | `POST` | Batched multi-file upload (PDF, XML, Image OCR, Markdown, HTML, TXT) |
-| `/v1/ingest` | `POST` | Raw JSON / Markdown document ingestion |
-| `/v1/extract` | `POST` | Ephemeral in-memory file text extraction for temporary chat attachments (`📎`) |
+| `/v1/ingest/file` | `POST` | Batched multi-file upload (PDF, Word `.docx`/`.doc`, ODT, RTF, Excel `.xlsx`/`.xlsb`/`.xls`, ODS, CSV, PPTX/PPT/ODP, EPUB, LaTeX, XML, JSON/JSONL, MD, HTML, Image OCR) |
+| `/v1/ingest` | `POST` | Raw JSON / Markdown document ingestion with selectable pipeline |
+| `/v1/extract` | `POST` | Ephemeral in-memory file extraction for temporary chat attachments (`📎`) across all supported document formats |
 | `/v1/documents` | `GET` | List all indexed documents, chunk counts, and Knowledge Graph relations in active DB |
 | `/v1/documents/:doc_id` | `DELETE` | Delete a document and its chunks from the active project database |
 | `/v1/documents/:doc_id/file` | `GET` | Serve original PDF or searchable dark-mode full-document HTML viewer (`.xml`/`.md`/`.txt`) |
@@ -161,5 +179,6 @@ All components in this stack are free and allow **commercial use**:
 | **SurrealDB 4.0** (`surrealdb/surrealdb`) | Rust | **BSL 1.1** (converts to Apache 2.0 after 4 yrs) | **Yes** | Free for commercial applications, client solutions, and internal production use (may not be resold as a managed third-party DBaaS). |
 | **Hugging Face TEI** (`text-embeddings-inference`) | Rust | **Apache 2.0** | **Yes (Unrestricted)** | Official Rust inference server for dense embeddings & cross-encoder rerankers. |
 | **Rust RAG Orchestrator & Leptos UI** (`axum`, `tokio`, `leptos`) | Rust | **MIT / Apache 2.0** | **Yes (Unrestricted)** | Full source code in `./rust-rag-orchestrator/` and `./rust-rag-ui/`. |
+| **ArtCraft Document & Layout Engines** (`storytold/craft-libs`, `pdfcraft-export`) | Rust | **MIT / Apache 2.0** | **Yes (Unrestricted)** | Pure-Rust parsers and Markdown/layout exporters for `.pdf`, `.docx`, `.doc`, `.odt`, `.rtf`, `.xlsx`, `.xlsb`, `.xls`, `.ods`, `.pptx`, `.ppt`, `.epub`, `.tex`, and `.html`. |
 | **Embedding & Reranker Models** (`BAAI/bge-m3`, `bge-reranker-v2-m3`, `mmarco-mMiniLMv2`) | Safetensors | **MIT / Apache 2.0** | **Yes (Unrestricted)** | Multilingual dense embedding and cross-encoder reranking models. |
 | **Colima** (optional macOS container runtime) | Go / Lima | **MIT License** | **Yes (Unrestricted)** | Lightweight open-source container runtime for macOS. |

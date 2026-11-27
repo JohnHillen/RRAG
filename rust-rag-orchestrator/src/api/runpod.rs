@@ -553,131 +553,231 @@ pub async fn get_runpod_status_handler(State(state): State<AppState>) -> impl In
     Json(build_status_json(&state, &st))
 }
 
-/// Queries RunPod's live GraphQL catalog (`https://api.runpod.io/graphql`) for all GPU types,
-/// live Secure/Community hourly pricing, and real-time stock status (`GET /v1/runpod/gpus`).
+/// Queries Runpod's live REST API v2 catalog (`GET https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD`)
+/// when an API key is configured (with automatic fallback to `https://api.runpod.io/graphql` when unauthenticated)
+/// for all GPU types, live Secure/Community hourly pricing, and real-time stock status (`GET /v1/runpod/gpus`).
 pub async fn list_runpod_gpus_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let query = r#"
-    query GpuTypes {
-        gpuTypes {
-            id
-            displayName
-            memoryInGb
-            secureCloud
-            communityCloud
-            securePrice
-            communityPrice
-            anyLow: lowestPrice(input: { gpuCount: 1 }) {
-                uninterruptablePrice
-                stockStatus
+    let api_key = global_runpod_state().read().unwrap().api_key.clone();
+    let http = state.db.http_client();
+    let mut gpus: Vec<RunpodGpuTypeItem> = Vec::new();
+
+    // 1. Primary path: Official Runpod REST API v2 Catalog (`/v2/catalog/gpus?include=AVAILABILITY&product=POD`)
+    if is_valid_runpod_api_key(&api_key) {
+        let sec_url = "https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD&cloud=SECURE";
+        let com_url = "https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD&cloud=COMMUNITY";
+        let (sec_res, com_res) = tokio::join!(
+            http.get(sec_url).bearer_auth(&api_key).send(),
+            http.get(com_url).bearer_auth(&api_key).send()
+        );
+
+        let mut comm_avail_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if let Ok(r_com) = com_res {
+            if r_com.status().is_success() {
+                if let Ok(v_com) = r_com.json::<Value>().await {
+                    if let Some(arr) = v_com["gpus"].as_array() {
+                        for g in arr {
+                            if let (Some(id), Some(av)) =
+                                (g["id"].as_str(), g["availability"].as_str())
+                            {
+                                if !av.eq_ignore_ascii_case("NONE") && !av.is_empty() {
+                                    comm_avail_map.insert(id.to_string(), av.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            secLow: lowestPrice(input: { gpuCount: 1, secureCloud: true }) {
-                uninterruptablePrice
-                stockStatus
-            }
-            comLow: lowestPrice(input: { gpuCount: 1, secureCloud: false }) {
-                uninterruptablePrice
-                stockStatus
+        }
+
+        if let Ok(r_sec) = sec_res {
+            if r_sec.status().is_success() {
+                if let Ok(v_sec) = r_sec.json::<Value>().await {
+                    if let Some(arr) = v_sec["gpus"].as_array() {
+                        for g in arr {
+                            let id = g["id"].as_str().unwrap_or_default().trim().to_string();
+                            let mem = g["memory"].as_u64().unwrap_or(0);
+                            if id.is_empty() || id.eq_ignore_ascii_case("unknown") || mem == 0 {
+                                continue;
+                            }
+                            let display_name = g["name"]
+                                .as_str()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or(&id)
+                                .trim()
+                                .to_string();
+                            let secure_cloud = g["secure"].as_bool().unwrap_or(false);
+                            let community_cloud = g["community"].as_bool().unwrap_or(false);
+                            if !secure_cloud && !community_cloud {
+                                continue;
+                            }
+
+                            let secure_price = if secure_cloud {
+                                g["price"]["secure"].as_f64().filter(|p| *p > 0.0)
+                            } else {
+                                None
+                            };
+                            let community_price = if community_cloud {
+                                g["price"]["community"].as_f64().filter(|p| *p > 0.0)
+                            } else {
+                                None
+                            };
+                            let lowest_price = match (secure_price, community_price) {
+                                (Some(sp), Some(cp)) => Some(sp.min(cp)),
+                                (Some(sp), None) => Some(sp),
+                                (None, Some(cp)) => Some(cp),
+                                (None, None) => None,
+                            };
+
+                            let secure_stock = g["availability"]
+                                .as_str()
+                                .filter(|av| !av.eq_ignore_ascii_case("NONE") && !av.is_empty())
+                                .map(|av| av.to_string());
+                            let community_stock = comm_avail_map.get(&id).cloned();
+                            let available = secure_stock.is_some() || community_stock.is_some();
+
+                            gpus.push(RunpodGpuTypeItem {
+                                id,
+                                display_name,
+                                memory_gb: mem,
+                                secure_cloud,
+                                community_cloud,
+                                secure_price,
+                                community_price,
+                                lowest_price,
+                                secure_stock,
+                                community_stock,
+                                available,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
-    "#;
 
-    let http = state.db.http_client();
-    let resp_res = http
-        .post("https://api.runpod.io/graphql")
-        .header("Content-Type", "application/json")
-        .json(&json!({ "query": query }))
-        .send()
-        .await;
+    // 2. Fallback path (if no API key is configured yet): Unauthenticated query
+    if gpus.is_empty() {
+        let query = r#"
+        query GpuTypes {
+            gpuTypes {
+                id
+                displayName
+                memoryInGb
+                secureCloud
+                communityCloud
+                securePrice
+                communityPrice
+                anyLow: lowestPrice(input: { gpuCount: 1 }) {
+                    uninterruptablePrice
+                    stockStatus
+                }
+                secLow: lowestPrice(input: { gpuCount: 1, secureCloud: true }) {
+                    uninterruptablePrice
+                    stockStatus
+                }
+                comLow: lowestPrice(input: { gpuCount: 1, secureCloud: false }) {
+                    uninterruptablePrice
+                    stockStatus
+                }
+            }
+        }
+        "#;
 
-    let mut gpus: Vec<RunpodGpuTypeItem> = Vec::new();
+        let resp_res = http
+            .post("https://api.runpod.io/graphql")
+            .header("Content-Type", "application/json")
+            .json(&json!({ "query": query }))
+            .send()
+            .await;
 
-    if let Ok(resp) = resp_res {
-        if let Ok(val) = resp.json::<Value>().await {
-            if let Some(arr) = val["data"]["gpuTypes"].as_array() {
-                for g in arr {
-                    let id = g["id"].as_str().unwrap_or_default().trim().to_string();
-                    let mem = g["memoryInGb"].as_u64().unwrap_or(0);
-                    if id.is_empty() || id.eq_ignore_ascii_case("unknown") || mem == 0 {
-                        continue;
+        if let Ok(resp) = resp_res {
+            if let Ok(val) = resp.json::<Value>().await {
+                if let Some(arr) = val["data"]["gpuTypes"].as_array() {
+                    for g in arr {
+                        let id = g["id"].as_str().unwrap_or_default().trim().to_string();
+                        let mem = g["memoryInGb"].as_u64().unwrap_or(0);
+                        if id.is_empty() || id.eq_ignore_ascii_case("unknown") || mem == 0 {
+                            continue;
+                        }
+                        let display_name = g["displayName"]
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or(&id)
+                            .trim()
+                            .to_string();
+                        let secure_cloud = g["secureCloud"].as_bool().unwrap_or(false);
+                        let community_cloud = g["communityCloud"].as_bool().unwrap_or(false);
+                        if !secure_cloud && !community_cloud {
+                            continue;
+                        }
+
+                        let secure_price = if secure_cloud {
+                            g["secLow"]["uninterruptablePrice"]
+                                .as_f64()
+                                .filter(|p| *p > 0.0)
+                                .or_else(|| g["securePrice"].as_f64().filter(|p| *p > 0.0))
+                        } else {
+                            None
+                        };
+
+                        let community_price = if community_cloud {
+                            g["comLow"]["uninterruptablePrice"]
+                                .as_f64()
+                                .filter(|p| *p > 0.0)
+                                .or_else(|| g["communityPrice"].as_f64().filter(|p| *p > 0.0))
+                        } else {
+                            None
+                        };
+
+                        let lowest_price = match (secure_price, community_price) {
+                            (Some(sp), Some(cp)) => Some(sp.min(cp)),
+                            (Some(sp), None) => Some(sp),
+                            (None, Some(cp)) => Some(cp),
+                            (None, None) => g["anyLow"]["uninterruptablePrice"]
+                                .as_f64()
+                                .filter(|p| *p > 0.0),
+                        };
+
+                        let secure_stock = if secure_cloud {
+                            g["secLow"]["stockStatus"]
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        };
+
+                        let community_stock = if community_cloud {
+                            g["comLow"]["stockStatus"]
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        };
+
+                        let available = secure_stock.is_some()
+                            || community_stock.is_some()
+                            || g["anyLow"]["stockStatus"]
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .is_some();
+
+                        gpus.push(RunpodGpuTypeItem {
+                            id,
+                            display_name,
+                            memory_gb: mem,
+                            secure_cloud,
+                            community_cloud,
+                            secure_price,
+                            community_price,
+                            lowest_price,
+                            secure_stock,
+                            community_stock,
+                            available,
+                        });
                     }
-                    let display_name = g["displayName"]
-                        .as_str()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or(&id)
-                        .trim()
-                        .to_string();
-                    let secure_cloud = g["secureCloud"].as_bool().unwrap_or(false);
-                    let community_cloud = g["communityCloud"].as_bool().unwrap_or(false);
-                    if !secure_cloud && !community_cloud {
-                        continue;
-                    }
-
-                    let secure_price = if secure_cloud {
-                        g["secLow"]["uninterruptablePrice"]
-                            .as_f64()
-                            .filter(|p| *p > 0.0)
-                            .or_else(|| g["securePrice"].as_f64().filter(|p| *p > 0.0))
-                    } else {
-                        None
-                    };
-
-                    let community_price = if community_cloud {
-                        g["comLow"]["uninterruptablePrice"]
-                            .as_f64()
-                            .filter(|p| *p > 0.0)
-                            .or_else(|| g["communityPrice"].as_f64().filter(|p| *p > 0.0))
-                    } else {
-                        None
-                    };
-
-                    let lowest_price = match (secure_price, community_price) {
-                        (Some(sp), Some(cp)) => Some(sp.min(cp)),
-                        (Some(sp), None) => Some(sp),
-                        (None, Some(cp)) => Some(cp),
-                        (None, None) => g["anyLow"]["uninterruptablePrice"]
-                            .as_f64()
-                            .filter(|p| *p > 0.0),
-                    };
-
-                    let secure_stock = if secure_cloud {
-                        g["secLow"]["stockStatus"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                    } else {
-                        None
-                    };
-
-                    let community_stock = if community_cloud {
-                        g["comLow"]["stockStatus"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                    } else {
-                        None
-                    };
-
-                    let available = secure_stock.is_some()
-                        || community_stock.is_some()
-                        || g["anyLow"]["stockStatus"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .is_some();
-
-                    gpus.push(RunpodGpuTypeItem {
-                        id,
-                        display_name,
-                        memory_gb: mem,
-                        secure_cloud,
-                        community_cloud,
-                        secure_price,
-                        community_price,
-                        lowest_price,
-                        secure_stock,
-                        community_stock,
-                        available,
-                    });
                 }
             }
         }
@@ -1189,7 +1289,7 @@ sleep infinity"#,
         if let Ok(r) = http.get(&pod_url).bearer_auth(&api_key).send().await {
             if let Ok(d) = r.json::<Value>().await {
                 let status_str = d["status"].as_str().unwrap_or("PROVISIONING").to_string();
-                let cost = d["costPerHr"].as_f64();
+                let cost = d["cost"].as_f64().or_else(|| d["costPerHr"].as_f64());
                 let actual_gpu = d["gpu"]["id"]
                     .as_str()
                     .or_else(|| d["gpu"]["displayName"].as_str())

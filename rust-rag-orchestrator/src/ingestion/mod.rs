@@ -2,6 +2,7 @@ pub mod attachments;
 pub mod chunker;
 pub mod documents;
 pub mod pdf;
+pub mod pdf_layout;
 pub mod pipelines;
 pub mod xml;
 

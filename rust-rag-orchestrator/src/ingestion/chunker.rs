@@ -2,7 +2,7 @@ use super::InferenceClient;
 
 #[derive(Debug, Clone)]
 enum StructuralBlock {
-    Heading(String),
+    Heading(u8, String),
     Table(String),
     List(String),
     Paragraph(String),
@@ -14,14 +14,12 @@ impl InferenceClient {
         self.semantic_chunk_text_with_title(None, text)
     }
 
-    /// Structure-aware document chunker for PDFs, tax/legal statutes (`§ 1 Abs. 1`), contracts, and Markdown:
-    /// 1. Extracts the document/statute title from the beginning of the PDF (e.g. `"Einkommensteuergesetz (EStG)"`
-    ///    or `"Werbevertrag: AdVantage Digital AG"`) and combines it with `doc_title`.
-    /// 2. Keeps paragraphs, bullet/numbered lists, and tables intact as atomic blocks.
-    /// 3. Never orphans a chapter/section/paragraph (`§`) heading at the bottom of a chunk.
-    /// 4. Prepends a hierarchical context header (`[Dokument: <Titel> | Abschnitt: <§ / Kapitel>]`) to every chunk
-    ///    so that identical section numbers (like `§ 1 Abs. 1` across different laws or `3. Bonus/Malus` across contracts)
-    ///    are always uniquely identifiable in BM25 full-text search, HNSW vector search, and LLM synthesis.
+    /// Structure-aware document chunker for PDFs, Word/ODT, spreadsheets, presentations, tax/legal statutes (`§ 1 Abs. 1`), contracts, and Markdown:
+    /// 1. Extracts the document/statute title from the beginning of the document and combines it with `doc_title`.
+    /// 2. Keeps paragraphs, bullet/numbered lists, and Markdown pipe tables intact as atomic blocks.
+    /// 3. Maintains a hierarchical Heading Breadcrumb Stack (`[H1, H2, H3, H4, H5, H6]`) so sub-sections
+    ///    always inherit their parent chapter/section path (`[Dokument: <Titel> | Abschnitt: <H1> > <H2> > <H3>]`).
+    /// 4. Never orphans a chapter/section/paragraph (`§`) heading at the bottom of a chunk.
     pub fn semantic_chunk_text_with_title(
         &self,
         doc_title: Option<&str>,
@@ -42,21 +40,32 @@ impl InferenceClient {
         let mut raw_chunks: Vec<(Option<String>, String)> = Vec::new();
         let mut current_chunk = String::new();
         let mut current_has_body = false;
+        let mut heading_stack: Vec<(u8, String)> = Vec::new();
         let mut active_heading: Option<String> = None;
         let mut chunk_heading: Option<String> = None;
 
         for block in blocks {
             match block {
-                StructuralBlock::Heading(h) => {
+                StructuralBlock::Heading(level, h) => {
                     if current_has_body && current_chunk.len() >= 1200 {
                         raw_chunks.push((chunk_heading.clone(), current_chunk.trim().to_string()));
                         current_chunk.clear();
                         current_has_body = false;
                     }
                     let clean_h = h.trim_start_matches('#').trim().to_string();
-                    active_heading = Some(clean_h.clone());
-                    if !current_has_body {
-                        chunk_heading = Some(clean_h);
+                    if !clean_h.is_empty() {
+                        // Pop any heading at the same or deeper level to maintain the H1 > H2 > H3 tree
+                        heading_stack.retain(|(lvl, _)| *lvl < level);
+                        heading_stack.push((level, clean_h));
+                        let breadcrumb = heading_stack
+                            .iter()
+                            .map(|(_, t)| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" > ");
+                        active_heading = Some(breadcrumb.clone());
+                        if !current_has_body {
+                            chunk_heading = Some(breadcrumb);
+                        }
                     }
                     if !current_chunk.is_empty() {
                         current_chunk.push_str("\n\n");
@@ -169,8 +178,8 @@ fn parse_structural_blocks(text: &str) -> Vec<StructuralBlock> {
             continue;
         }
 
-        if is_section_heading(trimmed, prev_blank) {
-            blocks.push(StructuralBlock::Heading(trimmed.to_string()));
+        if let Some(level) = detect_section_heading_level(trimmed, prev_blank) {
+            blocks.push(StructuralBlock::Heading(level, trimmed.to_string()));
             prev_blank = false;
             i += 1;
             continue;
@@ -205,7 +214,7 @@ fn parse_structural_blocks(text: &str) -> Vec<StructuralBlock> {
                 if next_trim.is_empty() {
                     break;
                 }
-                if is_section_heading(next_trim, false) || is_table_line(next_trim) {
+                if detect_section_heading_level(next_trim, false).is_some() || is_table_line(next_trim) {
                     break;
                 }
                 list_lines.push(next_raw.trim_end());
@@ -222,7 +231,7 @@ fn parse_structural_blocks(text: &str) -> Vec<StructuralBlock> {
             let next_raw = lines[i];
             let next_trim = next_raw.trim();
             if next_trim.is_empty()
-                || is_section_heading(next_trim, false)
+                || detect_section_heading_level(next_trim, false).is_some()
                 || is_table_line(next_trim)
                 || is_list_item(next_trim)
             {
@@ -238,48 +247,52 @@ fn parse_structural_blocks(text: &str) -> Vec<StructuralBlock> {
     blocks
 }
 
-fn is_section_heading(line: &str, prev_blank: bool) -> bool {
+fn detect_section_heading_level(line: &str, prev_blank: bool) -> Option<u8> {
     if line.starts_with('#') {
-        return true;
+        let hashes = line.bytes().take_while(|&b| b == b'#').count();
+        return Some((hashes.clamp(1, 6)) as u8);
     }
     if line.len() > 110 {
-        return false;
+        return None;
     }
     let upper = line.to_uppercase();
+    if upper.starts_with("TEIL ") || upper.starts_with("KAPITEL ") || upper.starts_with("ABSCHNITT ") {
+        return Some(1);
+    }
     if upper.starts_with("§ ")
         || upper.starts_with("§§ ")
         || upper.starts_with("ART. ")
         || upper.starts_with("ARTIKEL ")
-        || upper.starts_with("KAPITEL ")
-        || upper.starts_with("ABSCHNITT ")
-        || upper.starts_with("TEIL ")
         || upper.starts_with("ANLAGE ")
     {
-        return true;
+        return Some(2);
     }
     if prev_blank {
         let mut chars = line.chars().peekable();
         let mut saw_digit = false;
+        let mut dot_count = 0usize;
         while let Some(&c) = chars.peek() {
             if c.is_ascii_digit() || c == '.' {
                 if c.is_ascii_digit() {
                     saw_digit = true;
+                } else if c == '.' {
+                    dot_count += 1;
                 }
                 chars.next();
             } else {
                 break;
             }
         }
-        if saw_digit && line.contains('.') {
+        if saw_digit && dot_count > 0 {
             let rest: String = chars.collect();
             if let Some(first_after_space) = rest.strip_prefix(' ').and_then(|s| s.chars().next()) {
                 if first_after_space.is_uppercase() {
-                    return true;
+                    return Some((dot_count.clamp(1, 4)) as u8);
                 }
             }
         }
     }
-    false
+    None
 }
 
 fn is_table_line(line: &str) -> bool {

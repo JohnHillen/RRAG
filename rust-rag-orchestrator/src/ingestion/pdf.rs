@@ -288,14 +288,26 @@ function filterChunks(q) {
 }
 
 impl InferenceClient {
-    /// Extracts text from raw bytes (PDF, HTML, Markdown, Plaintext).
-    /// 1. For PDFs, first attempts fast digital text extraction via `pdftotext`.
-    /// 2. Falls back to pure-Rust `pdf_extract` (safeguarded with `catch_unwind`).
-    /// 3. If the PDF is a scanned image without a digital text layer,
-    ///    automatically runs OCR via `pdftoppm` + `tesseract` (German + English).
+    /// Extracts text/Markdown from raw bytes across all supported document formats using
+    /// ArtCraft (`storytold/craft-libs` & `pdfcraft-export`, MIT/Apache-2.0) pure-Rust format and layout engines:
+    /// - **PDF** (`.pdf`): `pdftohtml -xml` + ArtCraft `pdfcraft-export` layout engine (headings `#`/`##` by font size/weight, `**bold**`/`*italic*` runs, multi-column reading order, GFM pipe tables) -> `pdftotext` fallback -> automatic Tesseract OCR (`deu+eng`)
+    /// - **Images** (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.tif`, `.tiff`): Tesseract OCR (`deu+eng`)
+    /// - **Word & OpenDocument Text** (`.docx`, `.docm`, `.dotx`, `.dotm`, `.doc` Word 97–2003, `.odt`, `.ott`, `.fodt`, `.rtf`, `.tex`, `.latex`, `.epub`): `craft-docx`, `craft-doc-binary`, `craft-odf`, `craft-rtf`, `craft-latex`, `craft-epub` -> `craft-markdown::export`
+    /// - **Excel, OpenDocument Calc & CSV/TSV** (`.xlsx`, `.xlsm`, `.xlsb`, `.xls` BIFF8, `.ods`, `.csv`, `.tsv`): `craft-xlsx`, `craft-xls`, `craft-ods` sheet & Markdown table parser
+    /// - **Presentations** (`.pptx`, `.ppsx`, `.potx`, `.ppt` PowerPoint 95/97–2003, `.pps`, `.pot`, `.odp`): `craft-pptx` & `craft-ppt-binary` slide-by-slide Markdown extractor
+    /// - **Markdown** (`.md`, `.markdown`): Frontmatter-aware Markdown normalizer
+    /// - **XML** (`.xml`): Structured generic or statutory XML extractor (or Word Flat OPC / Word 2003 XML via `craft-docx`)
+    /// - **JSON / JSONL** (`.json`, `.jsonl`): Record-aligned Markdown extractor
+    /// - **HTML / XHTML** (`.html`, `.htm`, `.xhtml`): `craft-html::doc::import` -> `craft-markdown::export`
     pub fn extract_text_from_bytes(filename: &str, bytes: &[u8]) -> Result<String> {
-        let lower = filename.to_lowercase();
+        let lower = filename.trim().to_lowercase();
         if lower.ends_with(".pdf") {
+            // 1. Primary: ArtCraft `pdfcraft-export` layout, heading, inline-emphasis & table engine via `pdftohtml -xml`
+            if let Some(md) = super::pdf_layout::extract_pdf_markdown_via_artcraft_layout(bytes) {
+                return Ok(md);
+            }
+
+            // 2. Fallback: fast `pdftotext`
             let mut pdftotext_ran_ok = false;
             if let Ok(mut child) = std::process::Command::new("pdftotext")
                 .args(["-enc", "UTF-8", "-", "-"])
@@ -346,14 +358,64 @@ impl InferenceClient {
             || lower.ends_with(".tiff")
         {
             Self::extract_image_via_ocr(filename, bytes)
+        } else if lower.ends_with(".docx")
+            || lower.ends_with(".docm")
+            || lower.ends_with(".dotx")
+            || lower.ends_with(".dotm")
+        {
+            super::pipelines::formats::extract_docx_markdown(bytes)
+        } else if lower.ends_with(".doc") || lower.ends_with(".dot") {
+            super::pipelines::formats::extract_doc_binary_markdown(bytes)
+        } else if lower.ends_with(".odt") || lower.ends_with(".ott") || lower.ends_with(".fodt") {
+            super::pipelines::formats::extract_odt_markdown(bytes)
+        } else if lower.ends_with(".rtf") || bytes.trim_ascii_start().starts_with(b"{\\rtf") {
+            super::pipelines::formats::extract_rtf_markdown(bytes)
+        } else if lower.ends_with(".tex") || lower.ends_with(".latex") || lower.ends_with(".ltx") {
+            super::pipelines::formats::extract_latex_markdown(bytes)
+        } else if lower.ends_with(".epub") || craft_epub::is_epub(bytes) {
+            super::pipelines::formats::extract_epub_markdown(bytes)
+        } else if lower.ends_with(".xlsx")
+            || lower.ends_with(".xlsm")
+            || lower.ends_with(".xlsb")
+        {
+            super::pipelines::formats::extract_xlsx_markdown(bytes)
+        } else if lower.ends_with(".xls") || craft_xls::is_xls(bytes) {
+            super::pipelines::formats::extract_xls_markdown(bytes)
+        } else if lower.ends_with(".ods") || lower.ends_with(".ots") {
+            super::pipelines::formats::extract_ods_markdown(bytes)
+        } else if lower.ends_with(".csv") || lower.ends_with(".tsv") {
+            super::pipelines::formats::extract_csv_markdown(filename, bytes)
+        } else if lower.ends_with(".pptx")
+            || lower.ends_with(".ppsx")
+            || lower.ends_with(".potx")
+        {
+            super::pipelines::formats::extract_pptx_markdown(bytes)
+        } else if lower.ends_with(".ppt")
+            || lower.ends_with(".pps")
+            || lower.ends_with(".pot")
+            || craft_ppt_binary::sniff(bytes)
+        {
+            super::pipelines::formats::extract_ppt_binary_markdown(bytes)
+        } else if lower.ends_with(".odp") || lower.ends_with(".otp") {
+            super::pipelines::formats::extract_odp_markdown(bytes)
+        } else if lower.ends_with(".md") || lower.ends_with(".markdown") {
+            super::pipelines::formats::extract_markdown_document(filename, bytes)
+        } else if lower.ends_with(".json") || lower.ends_with(".jsonl") {
+            super::pipelines::formats::extract_json_markdown(filename, bytes)
         } else if lower.ends_with(".xml")
             || bytes.trim_ascii_start().starts_with(b"<?xml")
             || bytes.trim_ascii_start().starts_with(b"<dokumente")
         {
+            // Check if the XML file is a Word Flat OPC or Word 2003 XML document via craft-docx first
+            if let Ok(doc) = craft_docx::read_xml(bytes) {
+                let md = craft_markdown::export(&doc);
+                if !md.trim().is_empty() {
+                    return Ok(md.trim().to_string());
+                }
+            }
             Ok(super::xml::extract_structured_markdown_from_xml(bytes))
-        } else if lower.ends_with(".html") || lower.ends_with(".htm") {
-            let text = html2text::from_read(bytes, 100);
-            Ok(text)
+        } else if lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml") {
+            super::pipelines::formats::extract_html_markdown(bytes)
         } else {
             let sample = &bytes[..bytes.len().min(4096)];
             if sample.contains(&0) {
